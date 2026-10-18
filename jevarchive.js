@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.6
+//@version 0.0.7
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1984,6 +1984,7 @@ a{color:var(--ac)}
 .mem{flex:none;width:min(280px,78vw);scroll-snap-align:start;text-align:left;border:1px solid var(--line);background:var(--s2);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;color:var(--tx)}
 .mem:hover{border-color:var(--acln)}
 .mem .txt{font-size:13.5px;line-height:1.55;color:var(--tx2);display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+@media (min-width:900px){.film{flex-wrap:wrap;overflow:visible;scroll-snap-type:none;margin:0}.film .mem{flex:1 1 240px;width:auto;max-width:calc(50% - 5px)}}
 .mem .hd{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--tx3)}
 .meter{height:5px;border-radius:5px;background:var(--s3);overflow:hidden;flex:1}
 .meter i{display:block;height:100%;background:linear-gradient(90deg,var(--ac2),var(--ac));border-radius:5px}
@@ -2106,7 +2107,7 @@ svg.graph:active{cursor:grabbing}
 .pk small{color:var(--tx3);font-weight:500}
 .pk.on{background:var(--acbg);border-color:var(--acln);color:var(--tx)}
 .pk.dim{opacity:.55}
-.hscroll{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin:0 0 12px;scrollbar-width:none}
+.hscroll{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
 .hscroll::-webkit-scrollbar{display:none}
 .hscroll .pk{flex:none}
 .dcard{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
@@ -2171,37 +2172,52 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   /** 입력 중인 화면(설정 · 시작 안내)은 뒤에서 일이 끝나도 다시 그리지 않는다 (입력이 끊기지 않게) */
   function softRender() { if (ui.open && !ui.onboard && ui.view !== 'settings') render(); }
 
+  // 틀은 한 번만 만든다. 이후에는 바뀐 칸만 다시 쓴다 (같은 내용이면 손대지 않음)
+  function mountShell() {
+    if (document.getElementById('ja-app')) return;
+    document.body.innerHTML = `<style id="ja-css">${CSS}</style><div class="app" id="ja-app"><nav class="rail" id="ja-rail" aria-label="메뉴"></nav><main class="main"><header class="top" id="ja-top"></header><div class="scroll" id="sc"><div class="wrap" id="ja-wrap"></div></div></main><nav class="tabbar" id="ja-tabbar" aria-label="메뉴"></nav></div><div id="ja-sheet"></div>`;
+  }
+  function setHtml(el, html) { if (el && el.__html !== html) { el.innerHTML = html; el.__html = html; } }
+
   function render() {
+    mountShell();
+    const where = ui.onboard ? 'onb' : ui.view;
     const sc = document.getElementById('sc');
-    const keep = sc && sc.dataset.view === (ui.onboard ? 'onb' : ui.view);
-    const top = sc ? sc.scrollTop : 0;
+    const keep = sc.dataset.view === where;
+    const top = sc.scrollTop;
+    const xs = [...document.querySelectorAll('[data-x]')].map(el => [el.dataset.x, el.scrollLeft, el]);
     const st = storageStats();
     const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, settings: renderSettings }[ui.view] ?? renderNow)(st);
     const badge = { promises: st.threads > 0, now: !!statusAlerts(st).length };
-    document.body.innerHTML = `<style>${CSS}</style>
-      <div class="app">
-        <nav class="rail" aria-label="메뉴">
-          <div class="brand"><span class="logo">${icon('db', 18)}</span>JevArchive</div>
-          ${VIEWS.map(([id, label, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${label}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && st.threads ? `<span class="cnt">${st.threads}</span>` : ''}</button>`).join('')}
+    const label = escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '));
+    setHtml(document.getElementById('ja-rail'), `<div class="brand"><span class="logo">${icon('db', 18)}</span>JevArchive</div>
+          ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && st.threads ? `<span class="cnt">${st.threads}</span>` : ''}</button>`).join('')}
           <div class="grow"></div>
-          <div class="railstat">${statusPill(st)}<div class="xs dim" style="margin-top:8px">${escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · ') || '채팅방을 열어 주세요')}</div></div>
-        </nav>
-        <main class="main">
-          <header class="top">
-            <h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1>
-            <span class="sub">${escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '))}</span>
-            ${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}
-            <button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>
-          </header>
-          <div class="scroll" id="sc" data-view="${ui.onboard ? 'onb' : ui.view}"><div class="wrap">${view}</div></div>
-        </main>
-        ${ui.onboard ? '' : `<nav class="tabbar" aria-label="메뉴">${VIEWS.map(([id, label, ic]) => `<button class="tab${ui.view === id ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic, 22)}${label}${badge[id] && ui.view !== id ? '<i class="dot"></i>' : ''}</button>`).join('')}</nav>`}
-      </div>
-      ${ui.sheet ? renderSheet() : ''}`;
-    const nsc = document.getElementById('sc');
-    if (nsc && keep) nsc.scrollTop = top;
+          <div class="railstat">${statusPill(st)}<div class="xs dim" style="margin-top:8px">${label || '채팅방을 열어 주세요'}</div></div>`);
+    setHtml(document.getElementById('ja-top'), `<h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1><span class="sub">${label}</span>${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}<button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>`);
+    const tabbar = document.getElementById('ja-tabbar');
+    tabbar.style.display = ui.onboard ? 'none' : '';
+    setHtml(tabbar, ui.onboard ? '' : VIEWS.map(([id, lb, ic]) => `<button class="tab${ui.view === id ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic, 22)}${lb}${badge[id] && ui.view !== id ? '<i class="dot"></i>' : ''}</button>`).join(''));
+    sc.dataset.view = where;
+    setHtml(document.getElementById('ja-wrap'), view);
+    sc.scrollTop = keep ? top : 0;
+    renderSheetHost();
+    // 새로 만들어진 줄만 위치를 되돌린다 (그대로 있는 줄을 건드리면 넘기던 게 멈춘다)
+    for (const [k, x, old] of xs) { const el = document.querySelector(`[data-x="${k}"]`); if (el && el !== old) el.scrollLeft = x; }
     bindOnce();
     bindGraph();
+  }
+  /** 시트: 같은 시트면 안쪽만 바꾸고 스크롤 그대로. 새로 열 때만 애니메이션 */
+  function renderSheetHost() {
+    const host = document.getElementById('ja-sheet');
+    if (!ui.sheet) { host.innerHTML = ''; host.__key = null; return; }
+    const key = `${ui.sheet.type}:${ui.sheet.name ?? ui.sheet.ck ?? ''}`;
+    const inner = renderSheet();
+    const sheet = host.querySelector('.sheet');
+    if (sheet && host.__key === key) { const t = sheet.scrollTop; setHtml(sheet.querySelector('.sheetbody'), inner); sheet.scrollTop = t; return; }
+    host.innerHTML = `<div class="sheetbg" data-act="sheet-bg"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div class="sheetbody"></div></div></div>`;
+    setHtml(host.querySelector('.sheetbody'), inner);
+    host.__key = key;
   }
 
   function toast(msg) {
@@ -2256,7 +2272,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const present = lr?.present?.length ? lr.present : (settings.story ? [...new Set(timeline.slice(-3).flatMap(m => peopleIn(m.text)))] : []);
     const title = clockLabel(clock) || (chatLabel.chat || '이야기를 이어 가면 장면이 보여요');
     const items = lr?.items ?? [];
-    const film = items.length ? `<div class="film">${items.map(it => `<button class="mem" data-act="chunk" data-ck="${escapeHtml(it.ck)}">
+    const film = items.length ? `<div class="film" data-x="film">${items.map(it => `<button class="mem" data-act="chunk" data-ck="${escapeHtml(it.ck)}">
         <div class="hd">#${it.mi + 1} ${it.why === 'pin' ? '<span class="tag pin">고정</span>' : it.why === 'tail' ? '<span class="tag tail">방금 흐름</span>' : it.why === 'near' ? '<span class="tag">앞뒤</span>' : ''}<span class="meter"><i style="width:${Math.round(Math.min(3, it.lv) / 3 * 100)}%"></i></span></div>
         <div class="txt">${escapeHtml(it.text)}</div></button>`).join('')}</div>`
       : `<div class="empty"><div class="big">🎞️</div><b>아직 넣은 기억이 없어요</b>메시지를 보내면 이번 답장에 들어간 기억이 여기에 카드로 보여요.</div>`;
@@ -2488,7 +2504,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   function renderSheet() {
     const s = ui.sheet;
     const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : s.type === 'dircards' ? dirSheet() : '';
-    return `<div class="sheetbg" data-act="sheet-bg"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${inner}</div></div>`;
+    return inner;
   }
   const PH = { char: '캐릭터', user: '나', other: '다른 인물' };
   const PH_J = { 이: ['이', '가'], 가: ['이', '가'], 은: ['은', '는'], 는: ['은', '는'], 을: ['을', '를'], 를: ['을', '를'], 과: ['과', '와'], 와: ['과', '와'] };
@@ -2709,6 +2725,9 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const el = document.querySelector('.top .pill.ok');
     if (el) el.lastChild.textContent = text;
     else if (text) { const h = document.querySelector('.top .sub'); if (h) h.insertAdjacentHTML('afterend', `<span class="pill ok"><i></i>${escapeHtml(text)}</span>`); }
+    if (el && !text) el.remove();
+    const top = document.getElementById('ja-top');
+    if (top) top.__html = null;   // 직접 고쳤으니 다음 그리기 때 다시 쓰게
   }
   function scheduleSettingsSave(delay = 500) {
     if (ui.onboard || ui.view !== 'settings') return;
@@ -2768,6 +2787,19 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     ui.bound = true;
     document.body.addEventListener('click', (e) => { void onClick(e); });
     document.body.addEventListener('change', (e) => { void onChange(e); });
+    document.body.addEventListener('wheel', (e) => {
+      const el = e.target.closest?.('[data-x]');
+      if (!el || el.scrollWidth <= el.clientWidth + 2 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      const max = el.scrollWidth - el.clientWidth;
+      if ((e.deltaY > 0 && el.scrollLeft >= max - 1) || (e.deltaY < 0 && el.scrollLeft <= 0)) return;
+      e.preventDefault();
+      // 카드가 칸에 맞춰 붙어서(스냅) 조금씩 밀면 제자리로 돌아온다 → 휠 한 번에 카드 한 장씩
+      el.__acc = (el.__acc ?? 0) + e.deltaY;
+      if (Math.abs(el.__acc) < 40) return;
+      const step = (el.firstElementChild?.getBoundingClientRect().width ?? 260) + 10;
+      el.scrollBy({ left: Math.sign(el.__acc) * step, behavior: 'smooth' });
+      el.__acc = 0;
+    }, { passive: false });
     // PC ↔ 폰 너비가 바뀌면 관계도를 그 모양에 맞게 다시
     let lastWide = wide();
     globalThis.addEventListener?.('resize', () => { const w = wide(); if (w !== lastWide) { lastWide = w; if (ui.view === 'people') softRender(); } });
@@ -2847,7 +2879,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'greset': ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
       case 'dircards': ui.sheet = { type: 'dircards', pack: 'basic', edit: null }; render(); return;
-      case 'dsheet-pack': ui.sheet = { ...ui.sheet, pack: el.dataset.v, edit: null }; render(); document.querySelector('.sheet')?.scrollTo?.(0, 0); return;
+      case 'dsheet-pack': ui.sheet = { ...ui.sheet, pack: el.dataset.v, edit: null }; render(); return;
       case 'dirfreq': await patchSettings({ dirFreq: el.dataset.v }); render(); return;
       case 'dirpack': {
         const packs = new Set(settings.dirPacks);
