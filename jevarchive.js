@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.1.2
+//@version 0.1.3
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -964,6 +964,7 @@
     const picked = [...units.values()].map(v => (v.f ? { t: 'f', mi: v.f.mi, pos: v.f.pos, si: v.f.si, u: v.f, pri: v.pri } : { t: 'c', mi: v.c.mi, pos: v.c.pos, si: -1, u: v.c, pri: v.pri }))
       .sort((a, b) => a.mi - b.mi || a.pos - b.pos || a.si - b.si);
     const asSent = cfg.memForm === 'sentence';
+    wantTags(picked.filter(p => p.t === 'f').map(p => p.u));
     const lines = picked.map(p => (p.t === 'f' ? (asSent ? `#${p.mi + 1} ${p.u.sent}` : `#${p.mi + 1} ${p.u.line}`) : `<#${p.mi + 1} ${timeline[p.mi]?.role === 'user' ? 'user' : 'char'}> ${p.u.text}`));
     const slotted = (!asSent && picked.some(p => p.t === 'f')) || head.some(l => /^(Open promise|Secret):/.test(l) && l.includes('/'));
     const note = cfg.note ? `${cfg.note}\n` : '';
@@ -1458,12 +1459,15 @@
     if (storyJob || !chatKey) return;
     const ftodo = factBacklog().slice(-8).reverse();             // 칸 줄은 최근 것부터 (지금 대화와 가까운 기억이 먼저)
     const todo = settings.story ? storyBacklog().slice(0, 8) : []; // 이야기 정리는 순서대로 (관계 · 약속이 시간 순서라)
-    if (!ftodo.length && !todo.length) return;
+    const ttodo = tagBacklog();
+    if (!ftodo.length && !todo.length && !ttodo.length) return;
     const key = chatKey;
     const tr = beginTrace('story');
     storyJob = (async () => {
       if (ftodo.length) await timed(tr, '칸 줄 만들기', () => factMessages(ftodo), `메시지 ${ftodo.length}개`);
       if (todo.length && chatKey === key) await timed(tr, '이야기 분석', () => analyzeMessages(todo), `메시지 ${todo.length}개`);
+      const tl = chatKey === key ? tagBacklog() : [];
+      if (tl.length) await timed(tr, '칸 나누기', () => tagLater(tl), `문장 ${tl.length}개`);
     })()
       .catch(error => setError('이야기 분석', error))
       .finally(() => { endTrace(tr); storyJob = null; if (chatKey === key) softRender(); });
@@ -1936,7 +1940,7 @@
       for (const f of list) {
         const c = chunks[ids[f.pos]];
         const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
-        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
+        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
       }
     }
   }
@@ -1999,7 +2003,7 @@
     for (let i = 0; i < jobs.length; i += FACT_PER_CALL) {
       const part = jobs.slice(i, i + FACT_PER_CALL);
       const state = part.map((j, n) => `S${n}: ${j.s}`).join('\n');
-      const state1 = `${KIND_GUIDE}\n${state}`, state2 = `${ROLE_GUIDE}\n${state}`;
+      const state1 = `${KIND_GUIDE}\n${state}`;
       // ① 종류만
       const q1 = {};
       part.forEach((j, n) => { q1[`f${n}`] = { type: 'choice', instructions: `S${n}`, criteria: KIND_SHORT }; });
@@ -2007,19 +2011,13 @@
       try { a = await callJev(state1, q1); } catch (error) { setError('기억 만들기', error); return 0; }
       if (chatKey !== room) return 0;
       part.forEach((j, n) => { j.kind = topChoice(a[`f${n}`])[0]; });
-      // ② 사건 · 행동 · 약속 · 비밀 문장만 단어 칸 (규칙으로 못 정한 단어만)
-      const q2 = {};
-      part.forEach((j, n) => { if (TAG_KINDS.has(j.kind)) j.words.forEach((w, k) => { if (j.rule[k] == null) q2[`g${n}_${k}`] = { type: 'choice', instructions: `S${n} «${w}»`, criteria: SLOT_ROLES }; }); });
-      if (Object.keys(q2).length) {
-        try { Object.assign(a, await callJev(state2, q2)); } catch (error) { setError('칸 나누기', error); }
-        if (chatKey !== room) return 0;
-      }
+      // 단어 칸은 여기서 묻지 않는다 (규칙으로 정해지는 것만). 나머지는 그 기억이 쓰일 때 뒤에서 (tagLater)
       part.forEach((j, n) => {
         const kind = j.kind;
         if (!FACT_K[kind]) return;   // 건너뜀
         const slots = { who: [], with: [], whom: [], when: [], where: [], what: [], how: [], why: [] };
         j.words.forEach((w, k) => {
-          let r = j.rule[k] ?? (TAG_KINDS.has(kind) ? topChoice(a[`g${n}_${k}`])[0] : null);
+          let r = j.rule[k];
           if (!slots[r]) r = mustKeep(w) ? 'what' : null;
           if (r) slots[r].push(w.replace(/[.!?…]+$/u, ''));
         });
@@ -2027,7 +2025,7 @@
         if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
         if (!slots.where.length && clock.place) slots.where.push(clock.place);
         const s = ROLE_ORDER.map(r => slots[r].join(' '));
-        made.get(j.mi).push({ pos: j.pos, si: j.si, k: kind, s, ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), _sent: j.s });
+        made.get(j.mi).push({ pos: j.pos, si: j.si, k: kind, s, ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), _sent: j.s });
       });
     }
     // 칸 줄 임베딩 (찾기 열쇠)
@@ -2045,6 +2043,50 @@
     rebuildFacts();
     saveFacts();
     return mis.length;
+  }
+
+  // ── 칸 나누기는 필요할 때만 (보낸 뒤 뒤에서) ──
+  //  ① 답장에 실제로 들어간 사건 · 행동 · 약속 · 비밀 문장  ② 화면 "최근 일어난 일"에 보일 최근 것 몇 개
+  //  대부분의 문장은 한 번도 꺼내지지 않으니, 저장할 때 전부 나누는 것보다 훨씬 싸다
+  const tagWanted = new Set();   // "메시지 지문|조각|문장" 열쇠
+  const factKey = (f) => `${f.key}|${f.pos}|${f.si}`;
+  function wantTags(list) { for (const f of list) if (f?.untagged) tagWanted.add(factKey(f)); }
+  function tagBacklog(max = 12) {
+    const out = [];
+    const byKey = new Map(facts.map(f => [factKey(f), f]));
+    for (const k of tagWanted) { const f = byKey.get(k); if (f?.untagged) out.push(f); else tagWanted.delete(k); if (out.length >= max) return out; }
+    for (let i = facts.length - 1; i >= 0 && out.length < max; i--) { const f = facts[i]; if (f.untagged && (f.k === 'event' || f.k === 'action') && !out.includes(f)) { out.push(f); if (out.length >= 6) break; } }
+    return out;
+  }
+  async function tagLater(list) {
+    if (!list.length) return 0;
+    const room = chatKey;
+    const jobs = list.map(f => { const s = unquote(f.sent); const words = s.split(/\s+/).filter(Boolean).slice(0, 24); return { f, s, words, rule: words.map(ruleRole) }; });
+    const state = `${ROLE_GUIDE}\n${jobs.map((j, n) => `S${n}: ${j.s}`).join('\n')}`;
+    const q = {};
+    jobs.forEach((j, n) => j.words.forEach((w, k) => { if (j.rule[k] == null) q[`g${n}_${k}`] = { type: 'choice', instructions: `S${n} «${w}»`, criteria: SLOT_ROLES }; }));
+    let a = {};
+    if (Object.keys(q).length) {
+      try { a = await callJev(state, q); } catch (error) { setError('칸 나누기', error); return 0; }
+      if (chatKey !== room) return 0;
+    }
+    for (const [n, j] of jobs.entries()) {
+      const slots = { who: [], with: [], whom: [], when: [], where: [], what: [], how: [], why: [] };
+      j.words.forEach((w, k) => {
+        let r = j.rule[k] ?? topChoice(a[`g${n}_${k}`])[0];
+        if (!slots[r]) r = mustKeep(w) ? 'what' : null;
+        if (r) slots[r].push(w.replace(/[.!?…]+$/u, ''));
+      });
+      const old = j.f.slots;
+      if (!slots.when.length && old[3]) slots.when.push(old[3]);
+      if (!slots.where.length && old[4]) slots.where.push(old[4]);
+      const entry = factStore.get(j.f.key)?.find(x => x.pos === j.f.pos && x.si === j.f.si);
+      if (entry) { entry.s = ROLE_ORDER.map(r => slots[r].join(' ')); delete entry.t; factDirty.add(shardOf(j.f.key)); }
+      tagWanted.delete(factKey(j.f));
+    }
+    rebuildFacts();
+    saveFacts();
+    return jobs.length;
   }
 
   // ── 찾기: 칸 줄 지문 + 글자 겹침을 RRF로 ──
