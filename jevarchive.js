@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.7
+//@version 0.0.8
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -858,6 +858,12 @@
       out.push(`Open promise: ${t.who}${t.to ? ` → ${t.to}` : ''}: "${t.text}" (#${t.mi + 1})`);
       out.ko.push({ t: `약속 · ${t.who}${t.to ? ` → ${t.to}` : ''}: ${clip(t.text, 48)}`, c: 'gold' });
     }
+    // 비밀: 숨기는 사람이나 숨기는 상대가 장면에 있을 때. 화면 칩에는 내용을 안 보여 준다 (스포일러)
+    for (const t of openSecrets().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-2)) {
+      const from = t.to ?? 'the others';
+      out.push(`Secret: ${t.who} hides from ${from}: "${t.text}" — ${from} does not know this yet. Keep it hidden unless the story itself reveals it.`);
+      out.ko.push({ t: `비밀 · ${t.who} (${t.to ?? '모두'} 모르게)`, c: 'sec' });
+    }
     return out;
   }
 
@@ -1124,7 +1130,11 @@
 
   // ── 약속 ──
   const PROMISE_CUE = /약속|하기로|할게|해줄게|갈게|올게|하자|가자|만나자|꼭|반드시|맹세|다짐|계획|목표|다음에|내일|언젠가|기다릴게|돌아올|promise|swear|will\s|plan/u;
-  function openThreads() { return story.threads.filter(t => t.status === 'open'); }
+  // 비밀: threads에 kind: 'secret'으로 같이 둔다. who가 to(없으면 모두)에게 숨기는 것. 드러나면 status 'done'
+  const SECRET_CUE = /비밀|숨기|숨겨|숨긴|감추|감춰|모르게|몰래|말하지\s*마|말하지\s*않|말\s*못|들키|들킬|정체|사실은|아무도\s*모르|아무한테도|secret|hiding|hidden/u;
+  const isSecret = (t) => t.kind === 'secret';
+  function openThreads() { return story.threads.filter(t => t.status === 'open' && !isSecret(t)); }
+  function openSecrets() { return story.threads.filter(t => t.status === 'open' && isSecret(t)); }
 
   /** 아직 이야기 분석을 안 한 메시지 (Risu가 안 보낸 것 중) */
   function storyBacklog() {
@@ -1227,7 +1237,7 @@
       } catch (error) { setError('인물 판정', error); }
     }
     // 등장 횟수 · 함께 나온 짝 (무료)
-    const pairJobs = [], threadJobs = [], cardJobs = [];
+    const pairJobs = [], threadJobs = [], cardJobs = [], secretJobs = [];
     for (const c of runChunks) {
       const names = peopleIn(c.text);
       for (const n of names) { const p = story.people[n]; p.count++; p.first ??= c.mi; p.last = Math.max(p.last ?? 0, c.mi); }
@@ -1241,6 +1251,7 @@
       const author = timeline[c.mi]?.role === 'user' ? personaCache : characterCache.name;
       const who = [...new Set([author, ...names].filter(n => n && story.people[n]))];
       if (who.length && PROMISE_CUE.test(c.text) && threadJobs.length < 5) threadJobs.push({ c, names: who });
+      if (who.length && SECRET_CUE.test(c.text) && secretJobs.length < 4) secretJobs.push({ c, names: who });
     }
     // 사건 카드: 메시지마다 문장 몇 개 (이름이나 약속 말이 있는 문장 먼저)
     if (settings.cards) for (const mi of mis) {
@@ -1255,6 +1266,7 @@
       for (const x of ranked) cardJobs.push({ mi, pos: x.pos, s: x.s, cast, author, clauses: clausesOf(x.s) });
     }
     const closeJobs = openThreads().filter(t => runChunks.some(c => { const ns = peopleIn(c.text); return ns.includes(t.who) || (t.to && ns.includes(t.to)); })).slice(0, 5);
+    const revealJobs = openSecrets().filter(t => runChunks.some(c => { const ns = peopleIn(c.text); return ns.includes(t.who) || (t.to && ns.includes(t.to)); })).slice(0, 4);
     const q = {};
     pairJobs.forEach((j, i) => {
       q[`a${i}`] = { type: 'choice', instructions: `In this passage, how do ${j.pr.a} and ${j.pr.b} treat each other? «${clip(j.c.text, 700)}»`, criteria: { closer: 'they grow closer, warmer, or more trusting', apart: 'tension, conflict, coldness, or distrust', none: 'no clear change or they do not really interact' } };
@@ -1269,6 +1281,15 @@
       q[`pt${i}`] = { type: 'choice', instructions: 'Toward whom?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['none', 'nobody in particular']]) };
       q[`ps${i}`] = { type: 'choice', instructions: 'Which sentence states that promise or plan for later?', criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
     });
+    secretJobs.forEach((j, i) => {
+      const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
+      j.sents = sents;
+      q[`s${i}`] = { type: 'noul', instructions: `Does this passage show someone deliberately keeping a specific secret from someone else (a hidden fact, identity, past, feeling, or plan)? Private thoughts nobody is hiding do not count, and a secret that is being revealed to that person right now does not count. «${clip(j.c.text, 700)}»` };
+      q[`sw${i}`] = { type: 'choice', instructions: 'Who keeps that secret?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
+      q[`sf${i}`] = { type: 'choice', instructions: 'From whom is it kept hidden?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['everyone', 'everyone else'], ['unclear', 'unclear']]) };
+      q[`ss${i}`] = { type: 'choice', instructions: 'Which sentence states what the secret is?', criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
+    });
+    revealJobs.forEach((t, i) => { q[`v${i}`] = { type: 'noul', instructions: `In these new passages, does this secret come out (the person it was hidden from learns it, or it is exposed)? «${t.who} hides from ${t.to ?? 'everyone'}: ${t.text}»` }; });
     closeJobs.forEach((t, i) => { q[`c${i}`] = { type: 'noul', instructions: `In these new passages, is this promise or plan fulfilled, cancelled, or no longer relevant? «${t.who}${t.to ? ` → ${t.to}` : ''}: ${t.text}»` }; });
     cardJobs.forEach((j, i) => {
       const whoOpts = Object.fromEntries([...j.cast.map(c => [c, c]), ['none', 'no person acts (a fact, rule, or description)']]);
@@ -1312,6 +1333,18 @@
           story.threads.push({ id: ++story.seq, text, who: w, to: to && to !== 'none' && to !== w ? to : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
+        revealJobs.forEach((t, i) => { if (Number(a[`v${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
+        secretJobs.forEach((j, i) => {
+          if (Number(a[`s${i}`]?.noul ?? 0) < 0.75) return;
+          const [ss] = topChoice(a[`ss${i}`]);
+          if (ss === 'none') return;
+          const text = clip(unquote(j.sents[Number(String(ss ?? 's0').slice(1)) || 0] ?? j.c.text), 160);
+          if (story.threads.some(t => t.text === text)) return;
+          const [who] = topChoice(a[`sw${i}`]);
+          const [from] = topChoice(a[`sf${i}`]);
+          const w = who && who !== 'unclear' ? who : (j.names[0] ?? '');
+          story.threads.push({ id: ++story.seq, kind: 'secret', text, who: w, to: from && from !== 'unclear' && from !== 'everyone' && from !== w ? from : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
+        });
         cardJobs.forEach((j, i) => {
           const imp = rankScore(a[`k${i}_imp`]);
           if (imp < 1) return;
@@ -1866,7 +1899,7 @@
     let cardN = 0;
     for (const v of cardStore.values()) { cardN += v.length; bytes += v.reduce((a, cd) => a + (cd.vec?.length ?? 0) + (cd.what?.length ?? 0) * 2 + 40, 0); }
     const people = personList().filter(p => !p.hidden && p.count > 0).length;
-    return { messages: timeline.length, chunks: chunks.length, indexedMsgs: upto - unindexed(upto).length, sendable: upto, vecs, kb: Math.round(bytes / 1024), people, threads: openThreads().length, cards: cardN, storyLeft: settings.story ? storyBacklog().length : 0 };
+    return { messages: timeline.length, chunks: chunks.length, indexedMsgs: upto - unindexed(upto).length, sendable: upto, vecs, kb: Math.round(bytes / 1024), people, threads: openThreads().length, secrets: openSecrets().length, cards: cardN, storyLeft: settings.story ? storyBacklog().length : 0 };
   }
 
 
@@ -1967,6 +2000,10 @@ a{color:var(--ac)}
 .chip.ac{background:var(--acbg);border-color:var(--acln);color:var(--tx)}
 .chip.gold{background:rgba(244,184,96,.12);border-color:rgba(244,184,96,.35);color:#ffd9a0}
 .chip.warm{background:rgba(255,134,176,.12);border-color:rgba(255,134,176,.35);color:#ffc2d8}
+.chip.sec{background:rgba(180,140,255,.12);border-color:rgba(180,140,255,.35);color:#dccbff}
+.spoil{filter:blur(6px);cursor:pointer;transition:filter .2s ease;border-radius:6px;user-select:none}
+.spoil.show{filter:none;user-select:text}
+.promise.secret{border-color:rgba(180,140,255,.28)}
 .chip.cold{background:rgba(108,180,255,.12);border-color:rgba(108,180,255,.35);color:#bfe0ff}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:var(--r3);font-size:12.5px;background:var(--s2);color:var(--tx2);border:1px solid var(--line)}
 .pill i{width:8px;height:8px;border-radius:50%;background:var(--tx3);display:inline-block}
@@ -2155,8 +2192,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const avatar = (name, cls = '') => `<span class="av ${cls}" style="--h:${hueOf(name)}">${escapeHtml(String(name ?? '?').trim().slice(0, 1) || '?')}</span>`;
   const kpiBox = (v, label) => `<div class="kpi"><b>${v}</b><span>${label}</span></div>`;
   const secs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}초` : `${ms}ms`);
-  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속', 'promise'], ['memory', '기억', 'memory'], ['settings', '설정', 'settings']];
-  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속', memory: '기억', settings: '설정' };
+  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['settings', '설정', 'settings']];
+  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', settings: '설정' };
   const needsSetup = () => !settings.onboarded || !settings.jevKey;
 
   // ══ 열기 · 그리기 ══
@@ -2188,10 +2225,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const xs = [...document.querySelectorAll('[data-x]')].map(el => [el.dataset.x, el.scrollLeft, el]);
     const st = storageStats();
     const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, settings: renderSettings }[ui.view] ?? renderNow)(st);
-    const badge = { promises: st.threads > 0, now: !!statusAlerts(st).length };
+    const badge = { promises: st.threads + st.secrets > 0, now: !!statusAlerts(st).length };
     const label = escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '));
     setHtml(document.getElementById('ja-rail'), `<div class="brand"><span class="logo">${icon('db', 18)}</span>JevArchive</div>
-          ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && st.threads ? `<span class="cnt">${st.threads}</span>` : ''}</button>`).join('')}
+          ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && st.threads + st.secrets ? `<span class="cnt">${st.threads + st.secrets}</span>` : ''}</button>`).join('')}
           <div class="grow"></div>
           <div class="railstat">${statusPill(st)}<div class="xs dim" style="margin-top:8px">${label || '채팅방을 열어 주세요'}</div></div>`);
     setHtml(document.getElementById('ja-top'), `<h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1><span class="sub">${label}</span>${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}<button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>`);
@@ -2299,6 +2336,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <section class="card">
           <div class="ch"><h2>진행 중인 약속</h2><span class="sp"></span>${st.threads ? `<button class="btn sm g" data-act="go" data-view="promises">모두 ${st.threads}</button>` : ''}</div>
           ${open.length ? `<div class="col">${open.map(promiseHtml).join('')}</div>` : `<div class="empty small" style="padding:14px">${settings.story ? '아직 약속이 없어요. 대화에서 약속이나 계획이 나오면 여기 모여요.' : '이야기 기록을 켜면 약속을 모아 줘요.'}</div>`}
+          ${st.secrets ? `<button class="item" data-act="go-secrets" style="margin-top:8px"><span style="font-size:18px">🤫</span><div class="t"><b>숨기는 비밀 ${st.secrets}개</b><span>내용은 가려 둬요 · 눌러서 보기</span></div></button>` : ''}
         </section>
         <section class="card">
           <div class="field inline" style="padding-top:0"><div><div class="lb">${icon('spark', 16)} 감독</div><div class="help">템포 · 분위기 · 꺼낼 약속에, 연출 카드 중 지금 장면에 맞는 걸 Jev가 골라 짧게 귀띔해요. 회상과 같은 호출이라 호출 수는 안 늘어요.</div></div>${sw('director', settings.director, 'quick')}</div>
@@ -2318,12 +2356,15 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   }
 
   function promiseHtml(t) {
-    const done = t.status !== 'open';
-    return `<div class="promise">${avatar(t.who || '?', 'sm')}<div style="flex:1;min-width:0">
-        <div class="who">${escapeHtml(t.who || '누군가')}${t.to ? ` → ${escapeHtml(t.to)}` : ''}</div>
-        <div class="q">“${escapeHtml(t.text)}”</div>
-        <div class="row xs dim"><button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(t.ck)}">#${t.mi + 1} 원문</button>${done ? `<span class="chip ${t.status === 'done' ? 'ac' : ''}">${t.status === 'done' ? '지켜짐' : '취소됨'}</span>` : ''}</div>
-      </div><div class="acts">${done ? `<button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="open" aria-label="다시 열기" title="다시 열기">${icon('refresh', 18)}</button>` : `<button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="done" aria-label="지켜짐" title="지켜짐">${icon('check', 18)}</button><button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="dropped" aria-label="취소됨" title="취소됨">${icon('close', 18)}</button>`}</div></div>`;
+    const done = t.status !== 'open', sec = isSecret(t);
+    const L = sec ? { done: '드러남', dropped: '비밀 아님', open: '다시 숨기기' } : { done: '지켜짐', dropped: '취소됨', open: '다시 열기' };
+    const who = sec ? `🤫 ${escapeHtml(t.who || '누군가')} <span class="dim">(${t.to ? `${escapeHtml(t.to)} 모르게` : '모두 모르게'})</span>` : `${escapeHtml(t.who || '누군가')}${t.to ? ` → ${escapeHtml(t.to)}` : ''}`;
+    const text = sec ? `<span class="spoil" data-act="spoil" title="눌러서 보기 · 다시 누르면 가리기">“${escapeHtml(t.text)}”</span>` : `“${escapeHtml(t.text)}”`;
+    return `<div class="promise${sec ? ' secret' : ''}">${avatar(t.who || '?', 'sm')}<div style="flex:1;min-width:0">
+        <div class="who">${who}</div>
+        <div class="q">${text}</div>
+        <div class="row xs dim"><button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(t.ck)}">#${t.mi + 1} 원문</button>${done ? `<span class="chip ${t.status === 'done' ? (sec ? 'sec' : 'ac') : ''}">${L[t.status]}${sec && t.status === 'done' && t.closedMi != null ? ` · #${t.closedMi + 1}` : ''}</span>` : ''}</div>
+      </div><div class="acts">${done ? `<button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="open" aria-label="${L.open}" title="${L.open}">${icon('refresh', 18)}</button>` : `<button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="done" aria-label="${L.done}" title="${L.done}">${icon('check', 18)}</button><button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="dropped" aria-label="${L.dropped}" title="${L.dropped}">${icon('close', 18)}</button>`}</div></div>`;
   }
 
   // ══ 인물 · 관계도 ══
@@ -2463,10 +2504,16 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 
   // ══ 약속 ══
   function renderPromises() {
-    const all = story.threads.slice().reverse();
+    const kind = ui.tkind ?? 'promise', sec = kind === 'secret';
+    const all = story.threads.filter(t => isSecret(t) === sec).slice().reverse();
     const open = all.filter(t => t.status === 'open'), closed = all.filter(t => t.status !== 'open');
     const show = ui.threads === 'open' ? open : closed;
-    return `<div class="seg" role="tablist"><button class="${ui.threads === 'open' ? 'on' : ''}" data-act="ttab" data-v="open">진행 중 ${open.length}</button><button class="${ui.threads === 'closed' ? 'on' : ''}" data-act="ttab" data-v="closed">끝남 ${closed.length}</button></div>
+    const nP = story.threads.filter(t => !isSecret(t) && t.status === 'open').length, nS = story.threads.filter(t => isSecret(t) && t.status === 'open').length;
+    if (sec) return `<div class="seg" role="tablist"><button class="" data-act="tkind" data-v="promise">🎗️ 약속 ${nP}</button><button class="on" data-act="tkind" data-v="secret">🤫 비밀 ${nS}</button></div>
+      <div class="seg" role="tablist"><button class="${ui.threads === 'open' ? 'on' : ''}" data-act="ttab" data-v="open">숨기는 중 ${open.length}</button><button class="${ui.threads === 'closed' ? 'on' : ''}" data-act="ttab" data-v="closed">드러남 · 끝 ${closed.length}</button></div>
+      ${show.length ? `<div class="xs dim" style="margin:-4px 2px 0">내용은 스포일러라 가려 둬요. 눌러야 보여요.</div><div class="col">${show.map(promiseHtml).join('')}</div>` : `<div class="card"><div class="empty"><div class="big">🤫</div><b>${ui.threads === 'open' ? '숨기는 비밀이 없어요' : '드러난 비밀이 없어요'}</b>${settings.story ? '누가 누구에게 무언가를 숨기면 Jev가 모아 두고, 그 사람이 알게 되면 "드러남"으로 닫아요. 둘이 장면에 있을 때 "아직 모름"을 짧게 귀띔해서 모델이 아는 척하지 않게 해요.' : '설정 › 이야기에서 기록을 켜 주세요.'}</div></div>`}`;
+    return `<div class="seg" role="tablist"><button class="on" data-act="tkind" data-v="promise">🎗️ 약속 ${nP}</button><button class="" data-act="tkind" data-v="secret">🤫 비밀 ${nS}</button></div>
+      <div class="seg" role="tablist"><button class="${ui.threads === 'open' ? 'on' : ''}" data-act="ttab" data-v="open">진행 중 ${open.length}</button><button class="${ui.threads === 'closed' ? 'on' : ''}" data-act="ttab" data-v="closed">끝남 ${closed.length}</button></div>
       ${show.length ? `<div class="col">${show.map(promiseHtml).join('')}</div>` : `<div class="card"><div class="empty"><div class="big">🎗️</div><b>${ui.threads === 'open' ? '진행 중인 약속이 없어요' : '끝난 약속이 없어요'}</b>${settings.story ? '대화에서 약속 · 계획 · 목표가 나오면 Jev가 모아 두고, 지켜지면 닫아요. 그 사람이 다시 나오면 답장에 짧게 귀띔해요.' : '설정 › 이야기에서 기록을 켜 주세요.'}</div></div>`}`;
   }
 
@@ -2549,7 +2596,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
           <div class="row" style="gap:6px;margin-top:6px"><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="더 멀게">${icon('minus', 16)}</button><span class="affbar"><i style="${r.aff >= 0 ? `left:50%;width:${w}%;background:var(--warm)` : `right:50%;width:${w}%;background:var(--cold)`}"></i></span><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="더 가깝게">${icon('plus', 16)}</button><span class="xs ${r.aff >= 2 ? 'warnc' : 'dim'}" style="min-width:56px;text-align:right">${affLabel(r.aff)} ${r.aff > 0 ? '+' : ''}${r.aff}</span></div>
           ${settings.intim || r.intim?.n ? `<div class="row" style="gap:6px;margin-top:6px"><span class="xs dim">관계 횟수</span><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="관계 횟수 −1">${icon('minus', 14)}</button><b class="small" style="min-width:18px;text-align:center">${r.intim?.n ?? 0}</b><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="관계 횟수 +1">${icon('plus', 14)}</button>${r.intim?.firstCk ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.firstCk)}">처음 #${r.intim.first + 1}</button>` : ''}${r.intim?.lastCk && r.intim.n > 1 ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.lastCk)}">최근 #${r.intim.last + 1}</button>` : ''}</div>` : ''}
           ${r.events.length ? `<div class="xs dim" style="margin-top:4px">${r.events.slice(-4).reverse().map(ev => `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(ev.ck)}">${ev.d > 0 ? '💗' : '💧'} #${ev.mi + 1}</button>`).join('')}</div>` : ''}</div></div>`; }).join('') : '<div class="small dim">아직 함께 나온 인물이 없어요.</div>'}
-      ${th.length ? `<div class="sec">약속</div><div class="col">${th.map(promiseHtml).join('')}</div>` : ''}
+      ${th.length ? `<div class="sec">약속 · 비밀</div><div class="col">${th.map(promiseHtml).join('')}</div>` : ''}
       ${acts.length ? `<div class="sec">한 일 · 겪은 일</div><div class="list">${acts.map(cd => `<button class="item" data-act="chunk" data-ck="${escapeHtml(`${timeline[cd.mi].key}:${cd.pos}`)}"><div class="t"><b style="white-space:normal">${escapeHtml(cardText(cd))}</b><span>#${cd.mi + 1}</span></div></button>`).join('')}</div>` : ''}
       <div class="sec">고치기</div>
       <div class="col">
@@ -2866,8 +2913,11 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'person': ui.sheet = { type: 'person', name: el.dataset.name }; render(); return;
       case 'chunk': ui.sheet = { type: 'chunk', ck: el.dataset.ck }; render(); return;
       case 'pin': { const on = togglePin(el.dataset.ck); toast(on ? '고정했어요. 매번 답장에 넣어요.' : '고정을 풀었어요.'); render(); return; }
-      case 'thread': { const t = story.threads.find(x => x.id === Number(el.dataset.id)); if (t) { t.status = el.dataset.to; saveStory(); toast(t.status === 'open' ? '다시 열었어요' : t.status === 'done' ? '지켜진 약속으로 옮겼어요' : '취소된 약속으로 옮겼어요'); } render(); return; }
+      case 'thread': { const t = story.threads.find(x => x.id === Number(el.dataset.id)); if (t) { t.status = el.dataset.to; saveStory(); toast(isSecret(t) ? (t.status === 'open' ? '다시 숨긴 비밀로 옮겼어요' : t.status === 'done' ? '드러난 비밀로 옮겼어요' : '비밀 목록에서 뺐어요') : t.status === 'open' ? '다시 열었어요' : t.status === 'done' ? '지켜진 약속으로 옮겼어요' : '취소된 약속으로 옮겼어요'); } render(); return; }
       case 'ttab': ui.threads = el.dataset.v; render(); return;
+      case 'tkind': ui.tkind = el.dataset.v; ui.threads = 'open'; render(); return;
+      case 'spoil': el.classList.toggle('show'); return;
+      case 'go-secrets': await leaveSettings(); ui.view = 'promises'; ui.tkind = 'secret'; ui.threads = 'open'; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
       case 'search': await doSearch(); return;
       case 'intim': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { const r = p.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null }; r.n = Math.max(0, r.n + Number(el.dataset.d)); saveStory(); } render(); return; }
