@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.3
+//@version 0.0.4
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -410,6 +410,14 @@
   const queryCache = new Map();
   let lastRecall = null;
   let lastWindowLen = 0;
+  // 마지막 요청에 Risu가 실어 보낸 첫 메시지(지문). 그 앞까지가 "Risu가 안 보낸 이전 메시지"
+  // (개수로 세면 답장이 올 때마다 하나씩 어긋나서 "색인 안 됨 1개"가 계속 떴다). 기기에 저장해 다시 켜도 유지
+  let windowHead = null;
+  const WINHEAD_KEY = (key) => `${KEY}${key}~w`;
+  function sentUpto() {
+    if (windowHead) for (let i = timeline.length - 1; i >= 0; i--) if (timeline[i].key === windowHead) return i;
+    return Math.max(0, timeline.length - (lastWindowLen || 0));
+  }
   let backlogWarned = '';
   let busy = false;
   let job = null;
@@ -593,6 +601,8 @@
     seedPeople();
     lastRecall = null;
     lastWindowLen = 0;
+    windowHead = null;
+    try { windowHead = (await localStore?.getItem(WINHEAD_KEY(chatKey))) ?? null; } catch { }
     return true;
   }
 
@@ -1105,7 +1115,7 @@
 
   /** 아직 이야기 분석을 안 한 메시지 (Risu가 안 보낸 것 중) */
   function storyBacklog() {
-    const upto = Math.max(0, timeline.length - (lastWindowLen || 0));
+    const upto = sentUpto();
     const done = new Set(story.analyzed);
     const out = [];
     for (let mi = 0; mi < upto; mi++) if (!done.has(timeline[mi].key)) out.push(mi);
@@ -1758,6 +1768,8 @@
       if (!entries.length) return messages;
       syncWindow(entries);
       lastWindowLen = entries.length;
+      const head = timeline[timeline.length - entries.length]?.key ?? null;
+      if (head !== windowHead) { windowHead = head; try { void Promise.resolve(localStore?.setItem(WINHEAD_KEY(chatKey), head)).catch(() => {}); } catch { } }
       // 색인: Risu가 안 보낸 메시지 중 벡터가 없는 것. 많으면 최근 것부터 정해진 개수만 하고, 나머지는 다음에 (또는 도구 › 지금 전부 색인)
       const upto = timeline.length - entries.length;
       const todo = unindexed(upto);
@@ -1801,7 +1813,7 @@
       job = run;
       const tr = beginTrace('index');
       try {
-        const upto = Math.max(0, timeline.length - (lastWindowLen || 0));
+        const upto = sentUpto();
         const todo = unindexed(upto);
         let done = 0;
         await timed(tr, '지금 전부 색인', async () => {
@@ -1830,7 +1842,7 @@
   function storageStats() {
     let vecs = 0, bytes = 0;
     for (const v of vecStore.values()) { vecs += v.n; bytes += v.b64.reduce((a, s) => a + s.length, 0) + 40; }
-    const upto = Math.max(0, timeline.length - (lastWindowLen || 0));
+    const upto = sentUpto();
     let cardN = 0;
     for (const v of cardStore.values()) { cardN += v.length; bytes += v.reduce((a, cd) => a + (cd.vec?.length ?? 0) + (cd.what?.length ?? 0) * 2 + 40, 0); }
     const people = personList().filter(p => !p.hidden && p.count > 0).length;
