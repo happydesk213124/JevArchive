@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name JevArchive
+//@display-name 🏛️JevArchive 0.1.0
 //@api 3.0
-//@version 0.1.3
+//@version 0.1.0
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -2273,7 +2273,7 @@ a{color:var(--ac)}
 .iconbtn:hover{background:var(--s2);color:var(--tx)}
 .scroll{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:16px 16px calc(96px + var(--safe))}
 .wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:5;display:grid;grid-template-columns:repeat(5,1fr);padding:6px 6px calc(6px + var(--safe));background:rgba(13,16,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:5;display:grid;grid-template-columns:repeat(6,1fr);padding:6px 6px calc(6px + var(--safe));background:rgba(13,16,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
 .tab{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;border:0;background:none;color:var(--tx3);font-size:11px;border-radius:12px;min-height:52px;justify-content:center;position:relative}
 .tab.on{color:var(--tx)}
 .tab.on svg{color:var(--ac)}
@@ -2284,7 +2284,13 @@ a{color:var(--ac)}
   .tabbar{display:none}
   .scroll{padding:24px 28px 40px}
   .brand{display:flex;align-items:center;gap:10px;padding:4px 10px 18px;font-weight:800;letter-spacing:-.02em;font-size:17px}
-  .brand .logo{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(135deg,var(--ac),#b48cff);color:#0a0c11}
+  .brand .logo{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;background:var(--bg3,#1b2130);font-size:17px}
+  .log{padding:16px 18px}
+  .log + .log{margin-top:12px}
+  .log h3{margin:0;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .log h3 .xs{font-weight:400}
+  .log ul{margin:10px 0 0;padding-left:18px;line-height:1.65}
+  .log li + li{margin-top:2px}
   .navi{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:12px;border:0;background:none;color:var(--tx2);text-align:left;font-size:14.5px;position:relative}
   .navi:hover{background:var(--s1);color:var(--tx)}
   .navi.on{background:var(--acbg);color:var(--tx)}
@@ -2521,6 +2527,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     db: 'M12 8c4.4 0 8-1.3 8-3s-3.6-3-8-3-8 1.3-8 3 3.6 3 8 3zM4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3',
     film: 'M4 4h16v16H4zM8 4v16M16 4v16M4 9h4M16 9h4M4 15h4M16 15h4',
     clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2',
+    news: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
   };
   const icon = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[n]}"/></svg>`;
   const hasBatchim = (w) => { const c = String(w ?? '').trim().slice(-1).charCodeAt(0); return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 !== 0; };
@@ -2529,8 +2536,25 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const avatar = (name, cls = '') => `<span class="av ${cls}" style="--h:${hueOf(name)}">${escapeHtml(String(name ?? '?').trim().slice(0, 1) || '?')}</span>`;
   const kpiBox = (v, label) => `<div class="kpi"><b>${v}</b><span>${label}</span></div>`;
   const secs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}초` : `${ms}ms`);
-  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['settings', '설정', 'settings']];
-  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', settings: '설정' };
+  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['news', '업데이트', 'news'], ['settings', '설정', 'settings']];
+  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
+  // 업데이트 내역 (새 버전이 위)
+  const CHANGELOG = [
+    ['0.1.0', '2026-10-19', [
+      '기억을 문장으로: 메시지를 문장으로 나누고, Jev가 사건 · 행동 · 사실 · 약속 · 비밀만 골라 저장해요. 잡담 · 질문은 버려요.',
+      '꺼낼 때: 관련 있는 메시지를 먼저 찾고, Jev가 번호 목록 한 번으로 필요한 문장만 골라 넣어요. 같은 시험에서 52 → 54점, 넣는 양 445 → 293토큰.',
+      '누가 · 언제 · 어디서 칸 나누기는 실제로 쓰인 기억만 나중에 해요. Jev 사용량이 줄었어요.',
+      '비밀 추가: 스포일러로 가려 두고, 들키면 약속처럼 끝나요.',
+      '관계 횟수 (설정에서 켜기).',
+      '이야기 정리를 보낼 때 같이 해요. 손으로 정리 안 해도 되고, 답장이 올 땐 아무것도 안 해요.',
+      '탭 넘길 때 깜박임 · 스크롤 초기화 없앰. 가로 줄 마우스 휠, 연출 카드 묶음 줄바꿈.',
+      '🏛️ 아이콘. 왼쪽 햄버거 메뉴 · 채팅 메뉴에 바로가기. 업데이트 내역 탭.',
+    ]],
+    ['0.0.4', '2026-10-18', ['"정리 안 된 메시지" 수를 Risu가 실제로 못 보내는 것만 세도록 고침.']],
+    ['0.0.3', '2026-10-18', ['삽화 · 에셋 태그는 기억에서 빼요.', '채팅을 바꾼 뒤 기억이 비어 보이던 문제 고침.']],
+    ['0.0.2', '2026-10-18', ['연출 카드: 감독 힌트가 지금 장면에 맞는 카드를 골라 귀띔해요.']],
+    ['0.0.1', '2026-10-18', ['첫 공개: 옛날 대화 기억, 인물 · 관계 · 약속 정리, 감독 힌트.']],
+  ];
   const needsSetup = () => !settings.onboarded || !settings.jevKey;
 
   // ══ 열기 · 그리기 ══
@@ -2561,10 +2585,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const top = sc.scrollTop;
     const xs = [...document.querySelectorAll('[data-x]')].map(el => [el.dataset.x, el.scrollLeft, el]);
     const st = storageStats();
-    const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, settings: renderSettings }[ui.view] ?? renderNow)(st);
+    const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, news: renderNews, settings: renderSettings }[ui.view] ?? renderNow)(st);
     const badge = { promises: st.threads + st.secrets > 0, now: !!statusAlerts(st).length };
     const label = escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '));
-    setHtml(document.getElementById('ja-rail'), `<div class="brand"><span class="logo">${icon('db', 18)}</span>JevArchive</div>
+    setHtml(document.getElementById('ja-rail'), `<div class="brand"><span class="logo">🏛️</span>JevArchive</div>
           ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && st.threads + st.secrets ? `<span class="cnt">${st.threads + st.secrets}</span>` : ''}</button>`).join('')}
           <div class="grow"></div>
           <div class="railstat">${statusPill(st)}<div class="xs dim" style="margin-top:8px">${label || '채팅방을 열어 주세요'}</div></div>`);
@@ -2876,6 +2900,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const names = settings.story ? peopleIn(c.text).slice(0, 4) : [];
     return `<button class="item" data-act="chunk" data-ck="${escapeHtml(ck)}" style="align-items:flex-start"><div class="t"><div class="row xs dim" style="margin-bottom:4px">#${c.mi + 1} · ${timeline[c.mi]?.role === 'user' ? '나' : escapeHtml(characterCache.name || '캐릭터')}${pinned ? ' <span class="tag pin">고정</span>' : ''}${c.vec ? '' : ' <span class="tag">색인 전</span>'}${names.map(n => `<span class="chip" style="padding:1px 8px">${escapeHtml(n)}</span>`).join('')}</div><div class="snip" style="display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden">${highlight(c.text, q)}</div></div></button>`;
   }
+  function renderNews() {
+    return CHANGELOG.map(([v, date, items], i) => `<div class="card log"><h3>${v}${i === 0 ? ' <span class="pill ok"><i></i>지금 버전</span>' : ''}<span class="xs dim">${date}</span></h3><ul>${items.map(t => `<li>${escapeHtml(t)}</li>`).join('')}</ul></div>`).join('');
+  }
+
   function renderMemory() {
     const s = ui.search;
     let body;
@@ -3424,7 +3452,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   async function syncButton() {
     try {
       if (settings.showButton && !buttonPartId && R.registerButton) {
-        const part = await R.registerButton({ name: 'JevArchive', icon: '🗂️', iconType: 'html', location: 'action', id: 'jevarchive-gui' }, async () => { await openPanel('now'); });
+        const part = await R.registerButton({ name: 'Jev Archive', icon: '🏛️', iconType: 'html', location: 'action', id: 'jevarchive-gui' }, async () => { await openPanel('now'); });
         buttonPartId = part?.id ?? 'jevarchive-gui';
       } else if (!settings.showButton && buttonPartId && R.unregisterUIPart) {
         await R.unregisterUIPart(buttonPartId);
@@ -3436,7 +3464,13 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   // ── 시작 ──
   await loadSettings();
   await initLocalStore();
-  await R.registerSetting('JevArchive', () => openPanel(), '🗂️', 'html', 'jevarchive-settings');
+  await R.registerSetting('JevArchive', () => openPanel(), '🏛️', 'html', 'jevarchive-settings');
+  if (R.registerButton) {
+    for (const [location, id] of [['hamburger', 'jevarchive-side'], ['chat', 'jevarchive-chat']]) {
+      try { await R.registerButton({ name: 'Jev Archive', icon: '🏛️', iconType: 'html', location, id }, async () => { await openPanel('now'); }); }
+      catch (error) { console.error(LOG, '메뉴 버튼 등록 실패', error); }
+    }
+  }
   await R.addRisuReplacer('beforeRequest', beforeRequestHandler);
   await R.addRisuReplacer('afterRequest', afterRequestHandler);
   if (R.onUnload) {
