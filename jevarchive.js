@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.4
+//@version 0.0.5
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -87,7 +87,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: true, director: false,
+    story: true, cards: true, director: false, intim: false,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -196,6 +196,7 @@
       story: s.story !== false,
       cards: s.cards !== false,
       director: s.director === true,
+      intim: s.intim === true,
       dirCards: s.dirCards !== false,
       dirAuto: s.dirAuto !== false,
       dirFreq: DIR_FREQ[s.dirFreq] ? s.dirFreq : 'normal',
@@ -844,12 +845,13 @@
     const rel = [];
     for (let i = 0; i < present.length; i++) for (let j = i + 1; j < present.length; j++) {
       const p = pairOf(present[i], present[j]);
-      if (!p || (p.co < 2 && !p.type && Math.abs(p.aff) < 2)) continue;
-      rel.push({ p, w: (p.type ? 3 : 0) + Math.abs(p.aff) + Math.log2(1 + p.co) });
+      const im = settings.intim ? (p?.intim?.n ?? 0) : 0;
+      if (!p || (p.co < 2 && !p.type && Math.abs(p.aff) < 2 && !im)) continue;
+      rel.push({ p, w: (p.type ? 3 : 0) + Math.abs(p.aff) + Math.log2(1 + p.co) + (im ? 2 : 0) });
     }
     rel.sort((a, b) => b.w - a.w).slice(0, 4).forEach(({ p }) => {
-      out.push(`${p.a} ↔ ${p.b}: ${[p.type ? REL_DESC[p.type] : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`].filter(Boolean).join(', ')}`);
-      out.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? REL_TYPES[p.type] : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
+      out.push(`${p.a} ↔ ${p.b}: ${[p.type ? REL_DESC[p.type] : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`, settings.intim && p.intim?.n ? `intimate ×${p.intim.n}` : null].filter(Boolean).join(', ')}`);
+      out.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? REL_TYPES[p.type] : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`, settings.intim && p.intim?.n ? `관계 ${p.intim.n}번` : null].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
     });
     const th = openThreads().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-3);
     for (const t of th) {
@@ -1105,6 +1107,17 @@
     if (!story.pairs[k] && create) story.pairs[k] = { a: a < b ? a : b, b: a < b ? b : a, co: 0, aff: 0, type: null, last: null, events: [] };
     return story.pairs[k] ?? null;
   }
+  // ── 관계 횟수 (설정에서 켤 때만): Jev가 70% 이상 확신할 때만 센다. 6메시지 안에서 이어지고 이야기 날짜가 같으면 같은 장면 ──
+  const INTIM_P = 0.7;
+  const INTIM_GAP = 6;
+  function countIntim(pr, c) {
+    const r = pr.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null };
+    const day = storyClock(c.mi + 1).d;
+    const same = r.last != null && Math.abs(c.mi - r.last) <= INTIM_GAP && (!day || !r.day || day === r.day);
+    if (!same) { r.n++; if (r.first == null || c.mi < r.first) { r.first = c.mi; r.firstCk = ckOf(c); } }
+    if (r.last == null || c.mi >= r.last) { r.last = c.mi; r.lastCk = ckOf(c); }
+    r.day = day ?? r.day;
+  }
   function pairsOf(name) { return Object.values(story.pairs).filter(p => p.a === name || p.b === name); }
   function affLabel(aff) { return aff >= 6 ? '아주 가까움' : aff >= 3 ? '가까움' : aff <= -6 ? '아주 나쁨' : aff <= -3 ? '나쁨' : '보통'; }
   function affEn(aff) { return aff >= 6 ? 'very close' : aff >= 3 ? 'warm' : aff <= -6 ? 'hostile' : aff <= -3 ? 'tense' : 'neutral'; }
@@ -1246,6 +1259,7 @@
     pairJobs.forEach((j, i) => {
       q[`a${i}`] = { type: 'choice', instructions: `In this passage, how do ${j.pr.a} and ${j.pr.b} treat each other? «${clip(j.c.text, 700)}»`, criteria: { closer: 'they grow closer, warmer, or more trusting', apart: 'tension, conflict, coldness, or distrust', none: 'no clear change or they do not really interact' } };
       if (j.askType) q[`y${i}`] = { type: 'choice', instructions: `What is the relationship between ${j.pr.a} and ${j.pr.b} in this story?`, criteria: REL_DESC };
+      if (settings.intim) q[`x${i}`] = { type: 'noul', instructions: `In this passage, did ${j.pr.a} and ${j.pr.b} actually have sex with each other? Count only what happens now in the story, not a memory, dream, fantasy, plan, joke, or refusal. «${clip(j.c.text, 700)}»` };
     });
     threadJobs.forEach((j, i) => {
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
@@ -1283,6 +1297,7 @@
             if (j.pr.events.length > 60) j.pr.events = j.pr.events.slice(-60);
           }
           if (j.askType) { const [ty, pty] = topChoice(a[`y${i}`]); if (REL_TYPES[ty] && pty >= 0.45) j.pr.type = ty; }
+          if (settings.intim && Number(a[`x${i}`]?.noul ?? 0) >= INTIM_P) countIntim(j.pr, j.c);
         });
         threadJobs.forEach((j, i) => {
           if (Number(a[`p${i}`]?.noul ?? 0) < 0.75) return;
@@ -1399,6 +1414,12 @@
       const q = pairOf(into, other, true);
       q.co += p.co; q.aff = Math.max(-10, Math.min(10, q.aff + p.aff)); q.type ??= p.type; q.last = Math.max(q.last ?? 0, p.last ?? 0);
       q.events = [...q.events, ...p.events].sort((x, y) => x.mi - y.mi).slice(-60);
+      if (p.intim) {
+        const r = q.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null };
+        r.n += p.intim.n;
+        if (p.intim.first != null && (r.first == null || p.intim.first < r.first)) { r.first = p.intim.first; r.firstCk = p.intim.firstCk; }
+        if (p.intim.last != null && (r.last == null || p.intim.last > r.last)) { r.last = p.intim.last; r.lastCk = p.intim.lastCk; r.day = p.intim.day; }
+      }
     }
     for (const t of story.threads) { if (t.who === from) t.who = into; if (t.to === from) t.to = into; }
     saveStory();
@@ -2511,6 +2532,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <div class="sec">관계</div>
       ${rels.length ? rels.map(r => { const o = r.a === name ? r.b : r.a; const w = Math.abs(r.aff) * 5; return `<div class="relrow">${avatar(o, 'sm')}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b class="small">${escapeHtml(o)}</b><select class="sel" style="width:auto;min-height:32px;padding:2px 8px;font-size:12.5px" data-act="reltype" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}"><option value="">${r.co}번 함께</option>${Object.entries(REL_TYPES).map(([k, v]) => `<option value="${k}"${r.type === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
           <div class="row" style="gap:6px;margin-top:6px"><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="더 멀게">${icon('minus', 16)}</button><span class="affbar"><i style="${r.aff >= 0 ? `left:50%;width:${w}%;background:var(--warm)` : `right:50%;width:${w}%;background:var(--cold)`}"></i></span><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="더 가깝게">${icon('plus', 16)}</button><span class="xs ${r.aff >= 2 ? 'warnc' : 'dim'}" style="min-width:56px;text-align:right">${affLabel(r.aff)} ${r.aff > 0 ? '+' : ''}${r.aff}</span></div>
+          ${settings.intim || r.intim?.n ? `<div class="row" style="gap:6px;margin-top:6px"><span class="xs dim">관계 횟수</span><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="관계 횟수 −1">${icon('minus', 14)}</button><b class="small" style="min-width:18px;text-align:center">${r.intim?.n ?? 0}</b><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="관계 횟수 +1">${icon('plus', 14)}</button>${r.intim?.firstCk ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.firstCk)}">처음 #${r.intim.first + 1}</button>` : ''}${r.intim?.lastCk && r.intim.n > 1 ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.lastCk)}">최근 #${r.intim.last + 1}</button>` : ''}</div>` : ''}
           ${r.events.length ? `<div class="xs dim" style="margin-top:4px">${r.events.slice(-4).reverse().map(ev => `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(ev.ck)}">${ev.d > 0 ? '💗' : '💧'} #${ev.mi + 1}</button>`).join('')}</div>` : ''}</div></div>`; }).join('') : '<div class="small dim">아직 함께 나온 인물이 없어요.</div>'}
       ${th.length ? `<div class="sec">약속</div><div class="col">${th.map(promiseHtml).join('')}</div>` : ''}
       ${acts.length ? `<div class="sec">한 일 · 겪은 일</div><div class="list">${acts.map(cd => `<button class="item" data-act="chunk" data-ck="${escapeHtml(`${timeline[cd.mi].key}:${cd.pos}`)}"><div class="t"><b style="white-space:normal">${escapeHtml(cardText(cd))}</b><span>#${cd.mi + 1}</span></div></button>`).join('')}</div>` : ''}
@@ -2631,6 +2653,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">답장 뒤 뒤에서 · 보내기는 안 느려져요</span></div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><label>사건 카드</label><div class="help">"누가 → 누구에게: 무엇을" 카드를 만들어 인물 페이지에 보여 주고, 기억을 찾는 열쇠로도 써요. 넣는 건 여전히 원문이에요. Jev 질문이 꽤 늘어요(그래도 싸요).</div></div>${sw('cards', d.cards)}</div>
+        <div class="field inline"><div><label>관계 횟수 (성인)</label><div class="help">두 사람이 실제로 관계를 가진 횟수를 세요. 회상 · 꿈 · 계획 · 농담은 안 세고, 같은 장면은 한 번만. 인물 페이지에서 고칠 수 있고, 둘이 같이 나올 때만 짧게 넣어요. 이야기 정리에 질문 하나만 더해요.</div></div>${sw('intim', d.intim)}</div>
         <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 분위기 · 꺼낼 약속을 짧게 귀띔해요. 회상과 같은 Jev 호출이라 호출 수는 안 늘어요. 이야기를 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div>
         ${d.director ? `<div class="subbox">
           <div class="field inline" style="padding-top:0"><div><label>연출 카드</label><div class="help">미리 써 둔 연출 중 지금 장면에 맞는 걸 Jev가 골라 한 줄 넣어요. 맞는 게 없으면 안 넣어요.</div></div>${sw('dirCards', d.dirCards)}</div>
@@ -2816,6 +2839,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'ttab': ui.threads = el.dataset.v; render(); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
       case 'search': await doSearch(); return;
+      case 'intim': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { const r = p.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null }; r.n = Math.max(0, r.n + Number(el.dataset.d)); saveStory(); } render(); return; }
       case 'aff': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.aff = Math.max(-10, Math.min(10, p.aff + Number(el.dataset.d))); saveStory(); } render(); return; }
       case 'alias': { const v = document.getElementById('alias-in')?.value?.trim(); const p = story.people[el.dataset.name]; if (v && p && !p.aliases.includes(v)) { p.aliases.push(v); saveStory(); toast(`"${v}"도 ${josa(p.name, '으로', '로')} 볼게요`); } render(); return; }
       case 'merge': { const into = document.getElementById('merge-in')?.value; if (!into) { toast('합칠 인물을 고르세요'); return; } if (await confirmDialog(`${josa(el.dataset.name, '을', '를')} ${josa(into, '과', '와')} 같은 인물로 합칠까요?\n${josa(el.dataset.name, '은', '는')} ${into}의 다른 이름이 돼요.`, '합치기')) { mergePeople(el.dataset.name, into); ui.sheet = { type: 'person', name: into }; ui.layout = null; render(); } return; }
