@@ -607,6 +607,7 @@
     timeline = rawTimeline(id.chatObj);
     rebuildChunks();
     seedPeople();
+    await autoRestoreFromLore(id.chatObj);
     lastRecall = null;
     lastWindowLen = 0;
     windowHead = null;
@@ -2720,7 +2721,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -2753,6 +2754,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     if (needsSetup() && !ui.onboard) ui.onboard = { step: 0, d: { ...settings } };
     try { await refreshChat(); } catch (error) { setError('채팅 확인', error); }
     render();
+    if (restoredNote) { toast(restoredNote); restoredNote = ''; }
   }
   /** 입력 중인 화면(설정 · 시작 안내)은 뒤에서 일이 끝나도 다시 그리지 않는다 (입력이 끊기지 않게) */
   function softRender() { if (ui.open && !ui.onboard && ui.view !== 'settings') render(); }
@@ -3342,7 +3344,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const opt = (field, value, cur, title, desc, badge) => `<button class="opt${cur === value ? ' on' : ''}" data-act="pick" data-field="${field}" data-value="${value}"><b>${escapeHtml(title)}${badge ? `<span class="badge">${escapeHtml(badge)}</span>` : ''}</b><span>${escapeHtml(desc ?? '')}</span></button>`;
   const sw = (field, on, mode = '') => `<label class="sw"><input type="checkbox" ${mode === 'quick' ? `data-quick="${field}"` : `data-field="${field}"`}${on ? ' checked' : ''}><span></span></label>`;
   function presetSeg(cur) {
-    return `<div class="seg">${Object.entries(MEMORY_PRESETS).map(([k, p]) => `<button class="${cur === k ? 'on' : ''}" data-act="preset" data-v="${k}">${p.label}<small>${p.desc}</small></button>`).join('')}${cur === 'custom' ? '<button class="on">직접<small>고급에서</small></button>' : ''}</div>`;
+    return `<div class="seg">${Object.entries(MEMORY_PRESETS).map(([k, p]) => `<button class="${cur === k ? 'on' : ''}" data-act="preset" data-v="${k}">${p.label}<small>${p.desc}</small></button>`).join('')}<button class="${cur === 'custom' ? 'on' : ''}" data-act="preset-custom">직접<small>숫자 고르기</small></button></div>`;
   }
   function keyHint(d) {
     const k = cleanKey(d.jevKey);
@@ -3437,6 +3439,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <div class="list">
           ${[['story-all', '지금 전부 정리', `정리 안 된 이전 메시지 ${st.storyLeft}개. 칸 줄 기억 · 인물 · 관계 · 약속을 만들어요 (Jev).`, storyAll ? '정리 중…' : '정리', !!storyAll],
              ['reread', '채팅 다시 읽기', '메시지를 고치거나 지웠는데 반영이 안 된 것 같을 때.', '다시 읽기', false]].map(([act, t, dsc, label, dis]) => `<div class="item"><div class="t"><b>${t}</b><span>${dsc}</span></div><button class="btn sm" data-act="${act}"${dis ? ' disabled' : ''}>${label}</button></div>`).join('')}
+          <div class="item"><div class="t"><b>채팅 로어북에 백업</b><span>기억 · 인물 · 관계 · 약속 · 비밀을 이 채팅 로어북에 저장해요. 채팅을 복사 · 이동하면 같이 따라가요. ${story.backup ? `마지막 백업 ${timeAgo(story.backup.at)} · 기억 ${story.backup.n}개 · ${story.backup.kb}KB` : '아직 백업 안 했어요.'}</span></div><button class="btn sm p" data-act="lore-backup">백업</button></div>
+          <div class="item"><div class="t"><b>로어북 백업에서 되살리기</b><span>이 채팅 로어북에 있는 백업으로 지금 기억을 바꿔요.</span></div><button class="btn sm" data-act="lore-restore">되살리기</button></div>
+          <div class="item"><div class="t"><b>파일로 내보내기</b><span>같은 내용을 JSON 파일로 저장해요.</span></div><button class="btn sm" data-act="json-export">내보내기</button></div>
+          <div class="item"><div class="t"><b>파일에서 가져오기</b><span>내보낸 JSON 파일로 이 채팅의 기억을 바꿔요. 지금 것은 덮어써져요.</span></div><label class="btn sm">파일 선택<input type="file" id="ja-imp" accept=".json,application/json" style="display:none"></label></div>
           <div class="item"><div class="t"><b>이야기 기록 초기화</b><span>인물 · 관계 · 약속 · 비밀을 지워요. 칸 줄 기억과 고정은 그대로.</span></div><button class="btn sm d" data-act="story-reset">초기화</button></div>
           <div class="item"><div class="t"><b>칸 줄 기억 지우기</b><span>이 채팅의 칸 줄 기억을 이 기기에서 지워요. 원문은 Risu 채팅에 그대로고, 다시 정리하면 돼요.</span></div><button class="btn sm d" data-act="clear">지우기</button></div>
         </div>
@@ -3572,6 +3578,22 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   }
   async function onChange(e) {
     const el = e.target;
+    if (el.id === 'ja-imp' && el.files?.[0]) {
+      try {
+        const data = JSON.parse(await el.files[0].text());
+        if (data?.app !== 'jevarchive' || !data.story || !data.facts) throw new Error('JevArchive 내보내기 파일이 아니에요.');
+        const n = Object.values(data.facts).reduce((a, v) => a + (Array.isArray(v) ? v.length : 0), 0);
+        if (!await confirmDialog(`파일(기억 ${n}개${data.chat?.chat ? ` · ${data.chat.chat}` : ''})로 이 채팅의 기억을 바꿀까요?\n지금 기억은 덮어써져요.`, '가져오기')) return;
+        await ensureChat();
+        if (storyJob) await storyJob.catch(() => {});
+        applyBackup(data);
+        ui.layout = null;
+        render();
+        toast(`가져왔어요 · 기억 ${facts.length}개`);
+      } catch (error) { toast(String(error?.message ?? error)); }
+      finally { el.value = ''; }
+      return;
+    }
     if (el.dataset?.quick) { await saveSettings({ ...settings, [el.dataset.quick]: el.checked }); ui.draft = null; toast(el.checked ? '켰어요' : '껐어요'); render(); return; }
     if (el.dataset?.act === 'reltype') { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.type = el.value || null; p.lock = !!p.type; if (!relDir(p.type)) delete p.who; saveStory(); render(); toast(relDir(p.type) && !p.who ? `누가 ${relDir(p.type)[0]}인지 골라 주세요` : '관계를 바꿨어요 (고정)'); } return; }
     if (el.dataset?.modelFor) {
@@ -3692,6 +3714,12 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         try { await navigator.clipboard.writeText(t); toast('복사했어요.'); } catch { document.getElementById('dc-json')?.select?.(); toast('글을 길게 눌러 복사해 주세요.'); }
         return;
       }
+      case 'preset-custom': {
+        ui.keepOpen.set('adv-mem', true);
+        render();
+        document.querySelector('[data-keep="adv-mem"]')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return;
+      }
       case 'preset': {
         const p = MEMORY_PRESETS[el.dataset.v];
         if (!p) return;
@@ -3775,6 +3803,36 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         render();
         toast('사용량을 지웠어요.');
         return;
+      case 'lore-backup': {
+        try {
+          ui.progress = '채팅 로어북에 백업하는 중…'; render();
+          const b = await backupToLore();
+          ui.progress = ''; render();
+          toast(`백업했어요 · 기억 ${b.n}개 · 약 ${b.kb}KB`);
+        } catch (error) { ui.progress = ''; render(); toast(String(error?.message ?? error)); }
+        return;
+      }
+      case 'lore-restore': {
+        await ensureChat();
+        const { chat } = await currentChatObj();
+        const data = await readLoreBackup(chat);
+        if (!data) { toast('이 채팅 로어북에 백업이 없어요.'); return; }
+        const n = Object.values(data.facts).reduce((a, v) => a + (Array.isArray(v) ? v.length : 0), 0);
+        if (!await confirmDialog(`백업(기억 ${n}개, ${new Date(data.at).toLocaleString()})으로 이 채팅의 기억을 바꿀까요?\n지금 기억은 덮어써져요.`, '되살리기')) return;
+        if (storyJob) await storyJob.catch(() => {});
+        applyBackup(data);
+        ui.layout = null;
+        render();
+        toast(`되살렸어요 · 기억 ${facts.length}개`);
+        return;
+      }
+      case 'json-export': {
+        if (!await ensureChat()) { toast('채팅방을 먼저 열어 주세요.'); return; }
+        const safe = (s) => String(s || 'chat').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+        downloadJson(backupData(), `jevarchive_${safe(chatLabel.char)}_${safe(chatLabel.chat)}.json`);
+        toast(`내보냈어요 · 기억 ${facts.length}개`);
+        return;
+      }
       case 'story-reset':
         if (!await confirmDialog('인물 · 관계 · 약속 · 사건 카드를 지울까요?\n고정한 기억과 원문 색인은 그대로예요.', '초기화', true)) return;
         await resetStory();
@@ -3835,6 +3893,95 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <div class="kpis" style="margin:0">${b.map(([lb, x]) => `<div class="kpi"><b>${fmtTok(x.t)}<small class="dim" style="font-size:12px;font-weight:500"> 토큰</small></b><span>${lb} · ${fmtUsd(x.t)}${x.n ? ` · ${x.n}번` : ''}</span></div>`).join('')}</div></section>`;
   }
 
+  // ── 채팅 로어북 백업 (누를 때만) ──
+  //  @@dont_activate라 프롬프트에는 절대 안 들어간다. 채팅을 복사 · 이동하면 이 항목도 같이 가니까 기억도 따라간다.
+  //  기억이 하나도 없는 채팅을 열었는데 백업 항목이 있으면 거기서 되살린다 (복사한 채팅).
+  const BACKUP_TAG = 'JEVARCHIVE-BACKUP';
+  const BACKUP_TITLE = 'JevArchive 기억 백업 (지우지 마세요)';
+  const isBackupEntry = (l) => typeof l?.content === 'string' && l.content.includes(`\n${BACKUP_TAG} `);
+  const bytesToB64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+  const b64ToBytes = (b64) => { const s = atob(b64); const u8 = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i); return u8; };
+  async function packJson(json) {
+    if (typeof CompressionStream === 'function') {
+      try { return `gz:${bytesToB64(new Uint8Array(await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer()))}`; } catch { }
+    }
+    return `js:${json}`;
+  }
+  async function unpackJson(body) {
+    if (body.startsWith('js:')) return body.slice(3);
+    if (!body.startsWith('gz:') || typeof DecompressionStream !== 'function') throw new Error('압축을 풀 수 없어요.');
+    return await new Response(new Blob([b64ToBytes(body.slice(3))]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  }
+  async function currentChatObj() {
+    const charIndex = await R.getCurrentCharacterIndex();
+    const chatIndex = await R.getCurrentChatIndex();
+    return { charIndex, chatIndex, chat: await R.getChatFromIndex(charIndex, chatIndex) };
+  }
+  async function readLoreBackup(chat) {
+    const entry = (chat?.localLore ?? []).find(isBackupEntry);
+    if (!entry) return null;
+    try {
+      const lines = entry.content.split('\n');
+      const at = lines.findIndex(l => l.startsWith(`${BACKUP_TAG} `));
+      const data = JSON.parse(await unpackJson(lines.slice(at + 1).join('\n').trim()));
+      return data && data.story && data.facts ? data : null;
+    } catch (error) { setError('백업 읽기', error); return null; }
+  }
+  /** 백업 내용: 기억(문장 · 임베딩) + 이야기 기록. 로어북 · 파일 둘 다 이걸 쓴다 */
+  function backupData() {
+    const { backup, ...st } = story;
+    return { app: 'jevarchive', v: 1, at: Date.now(), chat: chatLabel, story: st, facts: Object.fromEntries(factStore) };
+  }
+  function downloadJson(value, filename) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(value)], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function backupToLore() {
+    if (!await ensureChat()) throw new Error('채팅방을 먼저 열어 주세요.');
+    if (storyAll) throw new Error('전부 정리 중이에요. 끝나면 다시 눌러 주세요.');
+    if (storyJob) await storyJob.catch(() => {});
+    const key = chatKey;
+    const n = facts.length;
+    const payload = await packJson(JSON.stringify(backupData()));
+    const content = `@@dont_activate\n${BACKUP_TAG} 1 · 기억 ${n}개 · 인물 ${personList().length}명 · ${new Date().toLocaleString()}\n${payload}`;
+    // 압축을 먼저 끝내고, 채팅을 읽자마자 바로 쓴다 (그 사이 바뀔 틈을 줄인다)
+    const { charIndex, chatIndex, chat } = await currentChatObj();
+    if (!chat || `${characterCache.chaId}_${chat.id || `idx${chatIndex}`}` !== key) throw new Error('채팅이 바뀌었어요. 다시 눌러 주세요.');
+    const lore = Array.isArray(chat.localLore) ? [...chat.localLore] : [];
+    const entry = { key: 'jevarchive-backup', secondkey: '', insertorder: 0, comment: BACKUP_TITLE, content, mode: 'normal', alwaysActive: false, selective: false, useRegex: false };
+    const at = lore.findIndex(isBackupEntry);
+    if (at >= 0) lore[at] = { ...lore[at], ...entry }; else lore.push(entry);
+    chat.localLore = lore;
+    await R.setChatToIndex(charIndex, chatIndex, chat);
+    story.backup = { at: Date.now(), n, kb: Math.round(content.length / 1024) };
+    saveStory();
+    return story.backup;
+  }
+  function applyBackup(data) {
+    const keep = story.backup;
+    story = { ...emptyStory(), ...data.story, ...(keep ? { backup: keep } : {}) };
+    factStore = new Map(Object.entries(data.facts).filter(([, v]) => Array.isArray(v)));
+    factDirty = new Set(Array.from({ length: SHARDS }, (_, s) => s));
+    seedPeople();
+    rebuildFacts();
+    saveStory();
+    void flushFacts();
+  }
+  let restoredNote = '';
+  async function autoRestoreFromLore(chat) {
+    if (factStore.size || story.analyzed?.length) return;
+    const data = await readLoreBackup(chat);
+    if (!data) return;
+    applyBackup(data);
+    restoredNote = `채팅 로어북 백업에서 기억 ${facts.length}개를 되살렸어요.`;
+  }
+
   // ── 바로가기 버튼 ──
   let buttonPartId = null;
   async function syncButton() {
@@ -3881,7 +4028,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     globalThis.__JEVARCHIVE_TEST__.x = {
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
-      renderNow, renderPeople, renderPromises, renderMemory, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
+      renderNow, renderPeople, renderPromises, renderMemory, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
       getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
