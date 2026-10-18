@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name 🏛️JevArchive 0.1.0
 //@api 3.0
-//@version 0.1.0
+//@version 0.1.1
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1883,6 +1883,10 @@
   const SLOT_ROLES = { who: 'who', with: 'with', whom: 'whom', when: 'when', where: 'where', what: 'what', how: 'how', why: 'why', none: 'none' };
   const KIND_SHORT = { event: 'event', action: 'action', fact: 'fact', promise: 'promise', secret: 'secret', skip: 'skip' };
   const KIND_GUIDE = `[KINDS] For each Sn, pick its kind: ${Object.entries(FACT_KINDS).map(([k, d]) => `${k} = ${d}`).join('; ')}.`;
+  const WORTH_SHORT = ['nothing', 'minor', 'useful', 'key'];
+  const WORTH_GUIDE = '[WORTH] For each Wn, score how worth recalling Sn is in a later scene: 0 nothing to recall (a reaction, exclamation, greeting, filler); 1 minor detail; 2 useful (who did what, a name, a feeling, a change); 3 key (an important event, fact, promise, or secret).';
+  const WORTH_DROP = 0.6, WORTH_LOW = 1.5;   // 이보다 낮으면 버림 / 꺼낼 때 조금 뒤로
+  const worthOf = (f) => f.w ?? 3;            // 예전에 저장한 건 점수가 없다 → 보통 취급
   const ROLE_GUIDE = '[ROLES] For each "Sn «word»", pick the role of that word in Sn: who = the doer; with = who does it together with them; whom = the target, or the one something is kept from; when; where; what = the action or the thing itself; how = manner or means; why = reason or purpose; none = filler, ending, or connective.';
   const MAX_FACT_SENTS = 24;   // 메시지 하나에서 칸 줄로 만들 문장 수
   const FACT_PER_CALL = 40;    // Jev 한 번에 보여 줄 문장 수
@@ -1940,7 +1944,7 @@
       for (const f of list) {
         const c = chunks[ids[f.pos]];
         const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
-        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
+        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
       }
     }
   }
@@ -2003,14 +2007,19 @@
     for (let i = 0; i < jobs.length; i += FACT_PER_CALL) {
       const part = jobs.slice(i, i + FACT_PER_CALL);
       const state = part.map((j, n) => `S${n}: ${j.s}`).join('\n');
-      const state1 = `${KIND_GUIDE}\n${state}`;
+      const state1 = `${KIND_GUIDE}\n${WORTH_GUIDE}\n${state}`;
       // ① 종류만
       const q1 = {};
-      part.forEach((j, n) => { q1[`f${n}`] = { type: 'choice', instructions: `S${n}`, criteria: KIND_SHORT }; });
+      part.forEach((j, n) => { q1[`f${n}`] = { type: 'choice', instructions: `S${n}`, criteria: KIND_SHORT }; q1[`m${n}`] = { type: 'score', instructions: `W${n}`, criteria: WORTH_SHORT }; });
       let a = {};
       try { a = await callJev(state1, q1); } catch (error) { setError('기억 만들기', error); return 0; }
       if (chatKey !== room) return 0;
-      part.forEach((j, n) => { j.kind = topChoice(a[`f${n}`])[0]; });
+      part.forEach((j, n) => {
+        j.kind = topChoice(a[`f${n}`])[0];
+        j.w = a[`m${n}`] ? Math.round(rankScore(a[`m${n}`]) * 10) / 10 : 3;
+        if (j.w < WORTH_DROP) j.kind = 'skip';                       // 꺼낼 일 없음 → 버림
+        else if (j.kind === 'skip' && j.w >= WORTH_LOW) j.kind = 'fact'; // 잡담처럼 보여도 꺼낼 만하면 살림
+      });
       // 단어 칸은 여기서 묻지 않는다 (규칙으로 정해지는 것만). 나머지는 그 기억이 쓰일 때 뒤에서 (tagLater)
       part.forEach((j, n) => {
         const kind = j.kind;
@@ -2025,7 +2034,7 @@
         if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
         if (!slots.where.length && clock.place) slots.where.push(clock.place);
         const s = ROLE_ORDER.map(r => slots[r].join(' '));
-        made.get(j.mi).push({ pos: j.pos, si: j.si, k: kind, s, ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), _sent: j.s });
+        made.get(j.mi).push({ pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), _sent: j.s });
       });
     }
     // 칸 줄 임베딩 (찾기 열쇠)
@@ -2113,6 +2122,7 @@
     const fs = new Map();
     sem.slice(0, 200).forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + 1 / (60 + r)));
     lex.slice(0, 200).forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + 1 / (60 + r)));
+    for (const [id, sc] of fs) if (worthOf(facts[id]) < WORTH_LOW) fs.set(id, sc * 0.85);
     const books = new Map();
     for (const [id, sc] of fs) { const f = facts[id]; const b = books.get(f.mi) ?? { mi: f.mi, score: 0, upd: false }; b.score = Math.max(b.score, sc); books.set(f.mi, b); }
     for (const b of books.values()) { b.upd = factsOfMessage(b.mi).some(f => f.upd); if (wantUpd && b.upd) b.score *= 1.3; }
@@ -2540,6 +2550,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
       '기억을 문장으로: 메시지를 문장으로 나누고, Jev가 사건 · 행동 · 사실 · 약속 · 비밀만 골라 저장해요. 잡담 · 질문은 버려요.',
       '꺼낼 때: 관련 있는 메시지를 먼저 찾고, Jev가 번호 목록 한 번으로 필요한 문장만 골라 넣어요. 같은 시험에서 52 → 54점, 넣는 양 445 → 293토큰.',
