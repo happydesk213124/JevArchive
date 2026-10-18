@@ -1350,6 +1350,15 @@
     }
     const closeJobs = openThreads().filter(t => runChunks.some(c => { const ns = peopleIn(c.text); return ns.includes(t.who) || (t.to && ns.includes(t.to)); })).slice(0, 5);
     const revealJobs = openSecrets().filter(t => runChunks.some(c => { const ns = peopleIn(c.text); return ns.includes(t.who) || (t.to && ns.includes(t.to)); })).slice(0, 4);
+    // 기억에서 온 약속 · 비밀 (약속 탭에 보이는 것)
+    const lastMi = Math.max(...mis);
+    const runText = runChunks.map(c => c.text).join('\n');
+    const runNames = new Set(peopleIn(runText));
+    const wordsOf = (t) => [...new Set(String(t).split(/\s+/).map(w => w.replace(/[^\p{L}\p{N}]/gu, '').replace(PARTICLE, '')).filter(w => w.length >= 2))];
+    const touched = (t) => (t.who && runNames.has(t.who)) || (t.to && runNames.has(t.to)) || peopleIn(t.text).some(n => runNames.has(n)) || wordsOf(t.text).filter(w => runText.includes(w)).length >= 2;
+    const memOpen = memThreads().filter(t => t.status === 'open' && t.mi < lastMi && touched(t));
+    const memClose = memOpen.filter(t => !isSecret(t)).slice(-5);
+    const memReveal = memOpen.filter(t => isSecret(t)).slice(-4);
     const q = {};
     pairJobs.forEach((j, i) => {
       q[`a${i}`] = { type: 'choice', instructions: `In this passage, how do ${j.pr.a} and ${j.pr.b} treat each other? «${clip(j.c.text, 700)}»`, criteria: { closer: 'they grow closer, warmer, or more trusting', apart: 'tension, conflict, coldness, or distrust', none: 'no clear change or they do not really interact' } };
@@ -1375,6 +1384,8 @@
     });
     revealJobs.forEach((t, i) => { q[`v${i}`] = { type: 'noul', instructions: `In these new passages, does this secret come out (the person it was hidden from learns it, or it is exposed)? «${t.who} hides from ${t.to ?? 'everyone'}: ${t.text}»` }; });
     closeJobs.forEach((t, i) => { q[`c${i}`] = { type: 'noul', instructions: `In these new passages, is this promise or plan fulfilled, cancelled, or no longer relevant? «${t.who}${t.to ? ` → ${t.to}` : ''}: ${t.text}»` }; });
+    memClose.forEach((t, i) => { q[`cm${i}`] = { type: 'noul', instructions: `In these new passages, is this promise or plan fulfilled, cancelled, or no longer relevant? «${t.who ? `${t.who}${t.to ? ` → ${t.to}` : ''}: ` : ''}${t.text}»` }; });
+    memReveal.forEach((t, i) => { q[`vm${i}`] = { type: 'noul', instructions: `In these new passages, does this secret come out (someone it was hidden from learns it, or it is exposed)? «${t.text}»` }; });
     cardJobs.forEach((j, i) => {
       const whoOpts = Object.fromEntries([...j.cast.map(c => [c, c]), ['none', 'no person acts (a fact, rule, or description)']]);
       const toOpts = Object.fromEntries([...j.cast.map(c => [c, `toward ${c}`]), ['alone', 'alone / to nobody in particular'], ['none', 'not an action toward someone']]);
@@ -1420,6 +1431,9 @@
         });
         closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
         revealJobs.forEach((t, i) => { if (Number(a[`v${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
+        const mt = (story.memThreads ??= {});
+        memClose.forEach((t, i) => { if (Number(a[`cm${i}`]?.noul ?? 0) >= 0.7) mt[t.key] = 'done'; });
+        memReveal.forEach((t, i) => { if (Number(a[`vm${i}`]?.noul ?? 0) >= 0.7) mt[t.key] = 'done'; });
         secretJobs.forEach((j, i) => {
           if (Number(a[`s${i}`]?.noul ?? 0) < 0.75) return;
           const [ss] = topChoice(a[`ss${i}`]);
@@ -2691,7 +2705,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
