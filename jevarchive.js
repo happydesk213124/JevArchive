@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.2
+//@version 0.0.3
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -128,6 +128,8 @@
       .replace(/<\/(div|p|li|tr|h\d)>/gi, '\n')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\{\{[^}]*\}\}/g, ' ')
+      .replace(/\[\[[^\[\]\n]{0,400}?::[^\[\]\n]{0,1000}?\]\]/g, ' ')
+      .replace(/!\[[^\]\n]{0,200}\]\([^)\n]{0,1000}\)/g, ' ')
       .replace(/[ \t]+/g, ' ')
       .replace(/ *\n */g, '\n')
       .replace(/\n{2,}/g, '\n')
@@ -1128,7 +1130,7 @@
     cardDirty = new Set();
     if (!localStore) return;
     const parts = await Promise.all(Array.from({ length: SHARDS }, (_, s) => Promise.resolve().then(() => localStore.getItem(cardShardKey(key, s))).catch(() => null)));
-    for (const part of parts) if (part && typeof part === 'object') for (const [k, v] of Object.entries(part)) if (Array.isArray(v)) cardStore.set(k, v);
+    for (const part of parts) if (part && typeof part === 'object') for (const [k, v] of Object.entries(part)) if (Array.isArray(v)) cardStore.set(k, v.map(cd => ({ ...cd, what: cleanText(cd.what) })));
   }
   function saveCards() {
     if (!localStore || cardTimer) return;
