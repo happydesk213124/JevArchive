@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.1.0
+//@version 0.1.1
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -750,9 +750,12 @@
     return Number.isFinite(sc) ? sc : 0;
   }
 
+  // 심사는 번호로: 같은 설명을 후보마다 반복하지 않게, 설명과 후보 목록은 state에 한 번만 (요청 크기가 크게 준다)
+  const RANK_SHORT = ['unrelated', 'background', 'useful', 'answers it'];
   async function judge(cands, state, askNeed, extra = null) {
     const q = { ...(extra ?? {}) };
-    for (const c of cands) q[`r${c.id}`] = { type: 'score', instructions: `How useful for replying to the latest message? «${c.text}»`, criteria: RANK_LEVELS };
+    cands.forEach((c, i) => { q[`r${c.id}`] = { type: 'score', instructions: `C${i}`, criteria: RANK_SHORT }; });
+    if (cands.length) state = `${state}\n\n[EARLIER RECORDS] For each Cn question, score how useful that record is for replying to the latest message: 0 unrelated, 1 background only, 2 useful context, 3 answers or explains it.\n${cands.map((c, i) => `C${i}: ${c.text}`).join('\n')}`;
     if (askNeed && cands.length) q.need = { type: 'choice', instructions: 'Which earlier record, if any, is still missing to answer the latest message?', criteria: SEARCH_NEEDS };
     if (!Object.keys(q).length) return { levels: new Map(), need: 'none', answers: {} };
     const answers = await callJev(state, q);
