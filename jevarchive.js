@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.1
+//@version 0.0.2
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -88,6 +88,7 @@
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
     story: true, cards: true, director: false,
+    dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
 
@@ -192,6 +193,12 @@
       story: s.story !== false,
       cards: s.cards !== false,
       director: s.director === true,
+      dirCards: s.dirCards !== false,
+      dirAuto: s.dirAuto !== false,
+      dirFreq: DIR_FREQ[s.dirFreq] ? s.dirFreq : 'normal',
+      dirPacks: Array.isArray(s.dirPacks) ? [...new Set(s.dirPacks.filter(x => typeof x === 'string'))].slice(0, 40) : [...DEFAULT_SETTINGS.dirPacks],
+      dirOff: Array.isArray(s.dirOff) ? [...new Set(s.dirOff.filter(x => typeof x === 'string'))].slice(0, 3000) : [],
+      dirCustom: sanitizeDirCards(s.dirCustom),
       injectMode: s.injectMode === 'system' ? 'system' : 'last_user',
       note: typeof s.note === 'string' ? s.note.trim() : DEFAULT_NOTE,
       showButton: s.showButton !== false,
@@ -758,24 +765,42 @@
   const MOOD = { warm: 'warm or tender', tense: 'tense or anxious', playful: 'playful or light', sad: 'sad or heavy', mysterious: 'mysterious', calm: 'calm or quiet' };
   const PACE_KO = { linger: '머무르기', advance: '진행', escalate: '고조', resolve: '마무리' };
   const MOOD_KO = { warm: '다정', tense: '긴장', playful: '가벼움', sad: '슬픔', mysterious: '미스터리', calm: '차분' };
-  function directorQuestions(present) {
+  function directorQuestions(present, qv = [], ctx = '') {
     const q = {};
+    let short = [];
+    if (settings.dirCards) {
+      const el = dirEligible(present);
+      if (el.length) { void ensureDirVecs(allDirCards()); short = dirShortlist(el, qv, ctx); }
+      Object.assign(q, genreQuestions());
+      if (short.length) q.d_card = { type: 'choice', instructions: "Which scene idea would make the next reply more engaging while fitting the current situation and the user's latest message? Choose none if none of them fits naturally right now.", criteria: Object.fromEntries([...short.map(c => [c.id, `${c.name} (when: ${c.fWhen}): ${clip(c.fText, 160)}`]), ['none', 'none of these; just continue naturally']]) };
+    }
     q.d_pace = { type: 'choice', instructions: 'For the next reply, what should the story do?', criteria: PACE };
     const th = openThreads().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-4);
     if (th.length) q.d_thread = { type: 'choice', instructions: 'Which open promise or plan, if any, would be natural to bring up now?', criteria: Object.fromEntries([...th.map(t => [`t${t.id}`, `${t.who}${t.to ? ` → ${t.to}` : ''}: ${t.text}`]), ['none', 'none of them now']]) };
     const npcs = present.filter(n => story.people[n]?.kind !== 'persona');
     if (npcs.length) q.d_spot = { type: 'choice', instructions: 'Which character should take the initiative in the next reply?', criteria: Object.fromEntries([...npcs.map(n => [n, n]), ['none', 'no one in particular']]) };
     q.d_mood = { type: 'choice', instructions: 'What mood fits the next reply best?', criteria: MOOD };
-    return { q, th };
+    return { q, th, short };
   }
-  function directorFrom(answers, th) {
+  function directorFrom(answers, th, short = []) {
     const [pace, pp] = topChoice(answers.d_pace);
     const [tid, tp] = topChoice(answers.d_thread);
     const [spot, sp] = topChoice(answers.d_spot);
     const [mood, mp] = topChoice(answers.d_mood);
     const thread = tid && tid !== 'none' && tp >= 0.4 ? th.find(t => `t${t.id}` === tid) : null;
-    const hint = { pace: PACE[pace] && pp >= 0.4 ? pace : null, thread: thread ?? null, spot: spot && spot !== 'none' && sp >= 0.4 ? spot : null, mood: MOOD[mood] && mp >= 0.4 ? mood : null, at: Date.now() };
-    return hint.pace || hint.thread || hint.spot || hint.mood ? hint : null;
+    let card = null;
+    const pr = answers.d_card?.probabilities;
+    const f = DIR_FREQ[settings.dirFreq] ?? DIR_FREQ.normal;
+    if (pr && Object.keys(pr).length) {
+      const pn = Number(pr.none ?? 0);
+      const [cid, cp] = Object.entries(pr).filter(([k]) => k !== 'none').sort((a, b) => b[1] - a[1])[0] ?? [];
+      if (cid && pn <= f.none && cp >= f.top && cp >= pn) card = short.find(c => c.id === cid) ?? null;
+    } else {
+      const [cid, cp] = topChoice(answers.d_card);
+      if (cid && cid !== 'none' && cp >= 0.5) card = short.find(c => c.id === cid) ?? null;
+    }
+    const hint = { pace: PACE[pace] && pp >= 0.4 ? pace : null, thread: thread ?? null, spot: spot && spot !== 'none' && sp >= 0.4 ? spot : null, mood: MOOD[mood] && mp >= 0.4 ? mood : null, card: card ? { id: card.id, pack: card.pack, name: card.name, text: card.fText } : null, at: Date.now() };
+    return hint.pace || hint.thread || hint.spot || hint.mood || hint.card ? hint : null;
   }
   function directorLine(h) {
     const bits = [];
@@ -783,7 +808,9 @@
     if (h.thread) bits.push(`bring up: ${h.thread.who}${h.thread.to ? ` → ${h.thread.to}` : ''}: "${h.thread.text}"`);
     if (h.spot) bits.push(`spotlight: ${h.spot}`);
     if (h.mood) bits.push(`mood: ${h.mood}`);
-    return bits.length ? `Director hint (optional; the user's direction comes first): ${bits.join('; ')}` : '';
+    const line = bits.length ? `Director hint (optional; the user's direction comes first): ${bits.join('; ')}` : '';
+    const scene = h.card ? `Scene idea (optional; weave it in only if it fits naturally, and never act or speak for the user): ${h.card.text}` : '';
+    return [line, scene].filter(Boolean).join('\n');
   }
 
   /** 지금 장면에 있는 인물: 이번 요청 글에 나온 이름 + 캐릭터 */
@@ -834,12 +861,19 @@
     let qv = [];
     if (limit) { try { qv = await timed(tr, '질문 임베딩', () => queryVecs([latest.slice(0, 2000) || ctx, ctx || latest])); } catch (error) { setError('임베딩', error); } }
     const first = limit ? await timed(tr, '후보 찾기', async () => retrieve(qv, latest, new Set(), cfg.candidates, limit), () => '') : [];
-    const dir = cfg.director && cfg.story && present.length ? directorQuestions(present) : null;
+    const dir = cfg.director && cfg.story && present.length ? directorQuestions(present, qv, ctx) : null;
     let levels = new Map(), need = 'none', jevOk = true, hint = null;
     try {
-      const r1 = await timed(tr, 'Jev 채점', () => judge(first, state, true, dir?.q), () => `후보 ${first.length}개${dir ? ' + 감독' : ''}`);
+      const r1 = await timed(tr, 'Jev 채점', () => judge(first, state, true, dir?.q), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
       ({ levels, need } = r1);
-      if (dir) { hint = directorFrom(r1.answers, dir.th); story.director = hint; saveStory(); }
+      if (dir) {
+        story.dirTurn = (story.dirTurn ?? 0) + 1;
+        genreFrom(r1.answers);
+        hint = directorFrom(r1.answers, dir.th, dir.short);
+        if (hint?.card) story.dirRecent = [...(story.dirRecent ?? []).slice(-40), { id: hint.card.id, turn: story.dirTurn }];
+        story.director = hint;
+        saveStory();
+      }
       if (need !== 'none' && limit) {
         let qn = [];
         try { qn = await queryVecs([`${NEED_QUERY[need] ?? ''} ${latest}`.slice(0, 2000)]); } catch { }
@@ -910,7 +944,7 @@
   // asked:   이미 Jev에게 "사람이야?"를 물어본 낱말 (결과와 상관없이 다시 안 묻는다)
 
   const STORY_KEY = (key) => `${KEY}story_${key}`;
-  const emptyStory = () => ({ v: 1, people: {}, pairs: {}, threads: [], pins: [], asked: [], rejected: [], analyzed: [], seq: 0, director: null });
+  const emptyStory = () => ({ v: 1, people: {}, pairs: {}, threads: [], pins: [], asked: [], rejected: [], analyzed: [], seq: 0, director: null, dirTurn: 0, dirRecent: [], genres: null });
   let story = emptyStory();
   let storyTimer = null;
   let storyChain = Promise.resolve();
@@ -1396,6 +1430,303 @@
     return retrieve(qv, query, new Set(), k, limit);
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  연출 카드: 사람이 써 둔 연출을 Jev가 지금 장면에 맞게 고른다 (글은 모델이 만들지 않는다)
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  //  ① 조건으로 거른다: 필요한 인물({other})이 있나, 관계 온도(aff), 열린 약속, 최근에 쓴 카드는 쉰다
+  //  ② 임베딩으로 지금 장면과 가까운 카드 8장만 추린다 (카드가 1000장이어도 Jev는 8장만 본다)
+  //  ③ 회상과 같은 Jev 호출에서 그중 하나 또는 "없음"을 고른다 (호출이 늘지 않는다)
+  //  고른 카드는 이름을 채워 "Scene idea (선택)" 한 줄로 넣는다. 사용자 지시가 늘 먼저.
+
+  // 넣을지 말지는 "맞는 게 없음" 확률로 정한다. 맞는 카드가 둘이면 확률이 갈려서(33% / 32%) 1등 기준으로는 아무것도 안 넣게 되기 때문
+  const DIR_FREQ = { rare: { none: 0.1, top: 0.4 }, normal: { none: 0.25, top: 0.15 }, often: { none: 0.45, top: 0.1 } };
+  const DIR_FREQ_KO = { rare: ['가끔', '딱 맞을 때만'], normal: ['보통', '추천'], often: ['자주', '더 과감하게'] };
+  const DIR_COOLDOWN = 8;   // 같은 카드는 보낸 횟수 8번 동안 쉰다
+  const DIR_SHORT = 12;     // Jev에게 보여 줄 카드 수 (실험: 장르 맞춤 + 12장이 맞는 카드를 8장 · 전체보다 약 2배 더 올림)
+  const dirCardOf = (pack, [id, name, when, text, opt]) => ({ id, pack, name, when, text, aff: opt?.aff ?? null, promise: !!opt?.promise });
+
+  function sanitizeDirCards(list) {
+    if (!Array.isArray(list)) return [];
+    const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+    const seen = new Set();
+    const out = [];
+    for (const c of list) {
+      if (!c || typeof c !== 'object') continue;
+      const name = s(c.name, 40), text = s(c.text, 400);
+      if (!name || !text) continue;
+      let id = s(c.id, 40) || `u${fnv(`${name}|${text}`).toString(36)}`;
+      while (seen.has(id)) id += 'x';
+      seen.add(id);
+      const affN = c.aff === null || c.aff === '' || c.aff === undefined ? NaN : Number(c.aff);
+      out.push({ id, pack: 'custom', name, when: s(c.when, 160), text, aff: Number.isFinite(affN) ? Math.max(-10, Math.min(10, Math.round(affN))) : null, promise: c.promise === true });
+      if (out.length >= 300) break;
+    }
+    return out;
+  }
+  /** 켜 둔 묶음의 카드 전부 (끈 카드 빼고) */
+  function allDirCards(cfg = settings, withOff = false) {
+    const off = new Set(cfg.dirOff);
+    const out = [];
+    for (const [pid, p] of Object.entries(DIR_PACKS)) if (cfg.dirPacks.includes(pid)) for (const c of p.cards) out.push(dirCardOf(pid, c));
+    if (cfg.dirPacks.includes('custom')) out.push(...cfg.dirCustom);
+    return withOff ? out : out.filter(c => !off.has(c.id));
+  }
+  function packCards(pid, cfg = settings) {
+    return pid === 'custom' ? cfg.dirCustom : (DIR_PACKS[pid]?.cards ?? []).map(c => dirCardOf(pid, c));
+  }
+
+  /** {char} {user} {other}를 이름으로. {other}가 필요한데 장면에 다른 인물이 없으면 null */
+  function dirFill(card, present) {
+    const ch = characterCache.name || 'char', us = personaCache || 'user';
+    const other = present.find(n => n !== ch && n !== us && story.people[n] && story.people[n].kind === 'npc');
+    if (/\{other\}/.test(card.text + card.when) && !other) return null;
+    const names = { char: ch, user: us, other: other ?? '' };
+    // 조사도 이름에 맞게: 하윤 + {가} → 하윤이, 지호 + {가} → 지호가
+    const PAIRS = { 이: ['이', '가'], 가: ['이', '가'], 은: ['은', '는'], 는: ['은', '는'], 을: ['을', '를'], 를: ['을', '를'], 과: ['과', '와'], 와: ['과', '와'] };
+    const batchim = (w) => { const c = String(w).slice(-1).charCodeAt(0); return c >= 0xac00 && c <= 0xd7a3 ? (c - 0xac00) % 28 !== 0 : false; };
+    const f = (t) => String(t).replace(/\{(char|user|other)\}(이|가|은|는|을|를|과|와)?/g, (_, k, j) => { const n = names[k]; return j ? n + PAIRS[j][batchim(n) ? 0 : 1] : n; });
+    return { ...card, fText: f(card.text), fWhen: f(card.when || card.name) };
+  }
+  // ── 장르 자동 맞춤: 감독 호출에 질문 5개를 얹어 가끔 묻고, 맞는 장르 묶음만 쓴다 (기본 · 내 카드는 늘) ──
+  const GENRES = { romance: 'romance, or romantic feelings between the main characters', daily: 'everyday slice-of-life: casual routines at home, school, or work', mystery: 'mystery, investigation, crime, or a suspense thriller', fantasy: 'fantasy or adventure: magic, quests, journeys, or monsters', horror: 'horror: fear, the supernatural, dread, or survival' };
+  const GENRE_EVERY = 30;   // 보낸 횟수 30번마다 다시 확인
+  function genreQuestions() {
+    const g = story.genres;
+    if (g && (story.dirTurn ?? 0) - (g.turn ?? 0) < GENRE_EVERY) return {};
+    return Object.fromEntries(Object.entries(GENRES).map(([k, d]) => [`g_${k}`, { type: 'noul', instructions: `Is this story strongly about ${d}?` }]));
+  }
+  function genreFrom(answers) {
+    if (!Object.keys(GENRES).some(k => answers?.[`g_${k}`])) return;
+    const prev = story.genres?.p ?? null;
+    const p = {};
+    for (const k of Object.keys(GENRES)) { const v = Number(answers[`g_${k}`]?.noul ?? 0); p[k] = Math.round((prev ? prev[k] * 0.4 + v * 0.6 : v) * 100) / 100; }
+    story.genres = { p, turn: story.dirTurn ?? 0 };
+  }
+  /** 이 채팅에 맞는 장르 묶음. 아직 모르면 null (전부 씀) */
+  function activeGenres() {
+    const p = story.genres?.p;
+    if (!p) return null;
+    const on = Object.keys(p).filter(k => p[k] >= 0.5);
+    return on.length ? on : [Object.keys(p).sort((a, b) => p[b] - p[a])[0]];
+  }
+  function dirEligible(present) {
+    const ch = characterCache.name, us = personaCache;
+    const aff = ch && us ? (pairOf(ch, us)?.aff ?? 0) : 0;
+    const turn = story.dirTurn ?? 0;
+    const cool = new Set((story.dirRecent ?? []).filter(r => turn - r.turn < DIR_COOLDOWN).map(r => r.id));
+    const hasPromise = openThreads().some(t => present.includes(t.who) || (t.to && present.includes(t.to)));
+    const gen = settings.dirAuto ? activeGenres() : null;
+    const out = [];
+    for (const c of allDirCards()) {
+      if (cool.has(c.id)) continue;
+      if (gen && GENRES[c.pack] && !gen.includes(c.pack)) continue;
+      if (c.aff != null && (c.aff >= 0 ? aff < c.aff : aff > c.aff)) continue;
+      if (c.promise && !hasPromise) continue;
+      const f = dirFill(c, present);
+      if (f) out.push(f);
+    }
+    return out;
+  }
+
+  // ── 카드 임베딩: 기기 저장소에 한 번만 (임베딩 설정이 바뀌면 다시) ──
+  const DIRVEC_KEY = `${KEY}dirvec`;
+  let dirVec = { prof: '', map: new Map(), loaded: false };
+  let dirVecJob = null;
+  const dirKey = (c) => fnv(`${c.name}|${c.when}|${c.text}`).toString(36);
+  const dirEmbedText = (c) => `${c.name}. ${c.when}. ${c.text}`.replace(/\{char\}/g, '캐릭터').replace(/\{user\}/g, '상대').replace(/\{other\}/g, '다른 인물');
+  function ensureDirVecs(cards) {
+    const prof = embedProfile();
+    if (dirVec.prof !== prof) dirVec = { prof, map: new Map(), loaded: false };
+    if (dirVecJob || (dirVec.loaded && cards.every(c => dirVec.map.has(dirKey(c))))) return dirVecJob;
+    const run = dirVecJob = (async () => {
+      if (!dirVec.loaded) {
+        try { const saved = await localStore?.getItem(DIRVEC_KEY); if (saved && saved.prof === prof) for (const [k, v] of Object.entries(saved.map ?? {})) dirVec.map.set(k, v); } catch { }
+        dirVec.loaded = true;
+      }
+      const miss = cards.filter(c => !dirVec.map.has(dirKey(c))).slice(0, 500);
+      if (!miss.length) return;
+      const vs = await embedTexts(miss.map(dirEmbedText), `연출 카드 임베딩 (${miss.length}개)`);
+      if (dirVec.prof !== prof) return;
+      miss.forEach((c, i) => dirVec.map.set(dirKey(c), packSigns(toSigns(vs[i]))));
+      try { await localStore?.setItem(DIRVEC_KEY, { prof, map: Object.fromEntries(dirVec.map) }); } catch { }
+    })().catch(error => setError('연출 카드 임베딩', error)).finally(() => { if (dirVecJob === run) dirVecJob = null; });
+    return run;
+  }
+  const bigrams = (t) => { const g = new Set(); const x = String(t).toLowerCase().replace(/[^가-힣a-z0-9]/g, ''); for (let i = 0; i < x.length - 1; i++) g.add(x.slice(i, i + 2)); return g; };
+  /** 지금 장면과 가까운 카드부터. 벡터가 아직 없으면 글자 겹침으로 */
+  function dirShortlist(cands, qv, ctx) {
+    const prof = embedProfile();
+    const useVec = qv.length && dirVec.prof === prof && cands.some(c => dirVec.map.has(dirKey(c)));
+    const turn = story.dirTurn ?? 0;
+    const g = useVec ? null : bigrams(ctx);
+    const scored = cands.map(c => {
+      const jitter = (fnv(`${c.id}:${turn}`) % 1000) / 1e5;   // 같은 점수면 매번 같은 카드만 나오지 않게
+      if (useVec) {
+        const b = dirVec.map.get(dirKey(c));
+        if (!b) return { c, s: -Infinity };
+        const v = unpackSigns(b, VEC_BITS);
+        return { c, s: qv.reduce((a, q, i) => a + simSigns(q, v) * (i === 0 ? 0.6 : 0.4), 0) + jitter };
+      }
+      let hit = 0;
+      for (const x of bigrams(`${c.fWhen} ${c.fText}`)) if (g.has(x)) hit++;
+      return { c, s: hit + jitter * 100 };
+    });
+    return scored.filter(x => x.s > -Infinity).sort((a, b) => b.s - a.s).slice(0, DIR_SHORT).map(x => x.c);
+  }
+
+  // ── 기본 연출 카드 묶음: [id, 이름, 언제, 연출, 조건] ──
+  // {char}=캐릭터 {user}=사용자 {other}=장면의 다른 인물. 사용자의 행동 · 말 · 속마음은 절대 정하지 않는다.
+  // 조건: aff = 캐릭터↔사용자 관계 온도가 이 이상(음수면 이 이하), promise = 열린 약속이 있을 때만
+  const DIR_PACKS = {
+    basic: { label: '기본', icon: '🎬', desc: '어떤 이야기에도 맞는 연출', cards: [
+      ['b01', '감각 한 컷', '대화만 이어지고 주변 묘사가 부족할 때', '대사 사이에 지금 장소의 소리 · 냄새 · 빛 중 하나를 구체적으로 한 문장 넣어 장면을 붙잡는다.'],
+      ['b02', '먼저 움직이기', '{char}가 묻는 말에 답만 하며 수동적일 때', '{char}가 대답에서 멈추지 않고, 자기 목적을 위한 작은 행동이나 제안을 하나 먼저 한다.'],
+      ['b03', '숨은 속마음', '{char}의 말과 진짜 감정이 다를 법한 순간', '{char}의 말은 그대로 두되, 시선 · 손짓 · 말끝 같은 작은 몸짓으로 숨긴 감정이 살짝 새어 나오게 한다.'],
+      ['b04', '떡밥 회수', '예전에 나왔던 물건 · 말 · 장소를 다시 꺼낼 만할 때', '앞에서 지나갔던 물건이나 말 하나를 자연스럽게 다시 등장시켜, 그때와 지금이 이어져 있음을 보여 준다.'],
+      ['b05', '작은 방해', '장면이 너무 순탄하게만 흘러갈 때', '날씨 · 소음 · 지나가는 사람 같은 작은 방해가 끼어들어 흐름을 한 번 꺾는다. 큰 사건으로 키우지는 않는다.'],
+      ['b06', '갈래 던지기', '다음에 무엇을 할지 정해지지 않아 이야기가 멈칫할 때', '{char}가 성격대로 두세 갈래의 다음 행동을 넌지시 꺼낸다. 고르는 건 {user}에게 맡긴다.'],
+      ['b07', '시간 건너뛰기', '같은 행동이 길게 반복되거나 한 장면이 끝난 느낌일 때', '의미 없는 과정은 짧게 넘기고 "얼마 뒤" 다음 장면의 첫 순간으로 옮겨 간다.'],
+      ['b08', '침묵의 무게', '감정적으로 무거운 말이 오간 직후', '{char}가 바로 대답하지 않는다. 짧은 침묵과 그 사이의 행동을 먼저 쓰고, 말은 짧게.'],
+      ['b09', '의외의 면모', '{char}가 한 가지 모습으로만 반복될 때', '{char}의 평소와 살짝 다른 습관 · 취향 · 약점 하나를 자연스럽게 드러낸다. 설정과 모순되지 않게.'],
+      ['b10', '대가 붙이기', '원하는 것이 너무 쉽게 손에 들어오려 할 때', '그 일이 공짜로 되지 않게, 작지만 분명한 대가나 조건을 하나 붙인다.'],
+      ['b11', '조용한 인물의 한마디', '{other}가 장면에 있지만 한동안 조용할 때', '{other}가 자기 입장에서 한마디 끼어들어 장면의 공기를 살짝 바꾼다.'],
+      ['b12', '기억의 메아리', '지금 상황이 예전의 어떤 일과 닮았을 때', '{char}가 비슷했던 예전 순간을 떠올리고, 그때와 달라진 점을 짧게 의식한다.'],
+      ['b13', '템포 올리기', '답장이 계속 길고 느리게 늘어질 때', '이번 답장은 평소보다 짧고 빠르게. 짧은 문장과 행동 위주로 템포를 올린다.'],
+      ['b14', '이 순간에 머물기', '중요한 감정의 순간인데 서둘러 넘어가려 할 때', '사건을 진행시키지 말고 이 순간에 머문다. 표정 · 숨 · 손끝의 변화를 천천히 그린다.'],
+      ['b15', '되묻기', '{char}가 설명만 길게 늘어놓고 있을 때', '{char}가 설명을 줄이고, {user}에게 정말 궁금한 것 하나를 되묻는다.'],
+      ['b16', '작은 오해', '관계가 너무 안정적이라 긴장이 없을 때', '{char}가 방금 일어난 일 하나를 살짝 다르게 받아들인다. 오해는 작게, 풀 여지를 남긴다.'],
+      ['b17', '소품으로 말하기', '손에 쥘 만한 물건이 근처에 있을 때', '주변 물건 하나를 {char}가 만지작거리거나 쓰게 해서, 감정이나 생각을 말 대신 보여 준다.'],
+      ['b18', '약속 떠올리기', '열린 약속에 얽힌 사람이 지금 장면에 있을 때', '{char}가 아직 남은 약속을 문득 떠올리고, 말이나 행동으로 슬쩍 내비친다.', { promise: true }],
+      ['b19', '바깥 소식', '둘만의 장면이 길어져 세상이 멈춘 느낌일 때', '바깥에서 들려온 소식 · 소문 · 변화 하나를 전해, 세상이 계속 움직이고 있음을 보여 준다.'],
+      ['b20', '몸이 먼저', '오래 걷거나 싸우거나 밤을 새운 뒤', '피로 · 배고픔 · 추위 같은 몸 상태를 {char}가 실제로 느끼고, 행동이 그 영향을 받게 한다.'],
+      ['b21', '티 안 나는 배려', '{char}와 {user} 사이에 아직 거리가 있을 때', '{char}가 생색내지 않고 작은 배려 하나를 한다. 말로는 아무렇지 않은 척.'],
+      ['b22', '굽히지 않기', '{char}가 너무 쉽게 동의만 하고 있을 때', '{char}가 자기 생각에서 하나는 굽히지 않는다. 이유는 성격과 사정에서 나온다.'],
+      ['b23', '다음이 궁금하게', '한 장면이 마무리되어 갈 때', '답장 끝에 다음이 궁금해지는 작은 갈고리(낯선 소리, 의미심장한 한마디, 도착한 편지 등)를 남긴다.'],
+      ['b24', '말투 대비', '{other}와 {char}가 같은 장면에 있을 때', '{char}와 {other}의 말투 · 태도 차이가 드러나게 짧게 주고받게 한다.'],
+      ['b25', '목표로 한 걸음', '이야기가 목적 없이 흘러가고 있을 때', '{char}가 하려던 일이나 더 큰 목표를 떠올리고 그쪽으로 한 걸음 움직인다.'],
+      ['b26', '사소한 실수', '{char}가 너무 완벽하게만 그려질 때', '{char}가 사소한 실수를 하나 하고, 성격대로 반응한다.'],
+      ['b27', '흐르는 시간', '같은 장소에 오래 머물러 있을 때', '빛 · 날씨 · 사람들의 흐름 같은 주변이 바뀌어 시간이 흘렀음이 느껴지게 한다.'],
+      ['b28', '비밀 한 조각', '{char}에게 아직 말하지 않은 사정이 있을 법할 때', '{char}가 숨기던 것의 아주 작은 단서 하나를 무심코 흘린다. 전부 밝히지는 않는다.'],
+      ['b29', '반응 먼저', '방금 큰 행동이나 중요한 말이 나왔을 때', '다른 일로 넘어가기 전에, 방금 일에 대한 {char}의 즉각적이고 구체적인 반응부터 충분히 쓴다.'],
+      ['b30', '숨 돌리기', '분위기가 계속 무겁거나 딱딱할 때', '{char}가 성격에 맞는 가벼운 농담이나 엉뚱한 행동으로 잠깐 숨 돌릴 틈을 만든다.'],
+    ] },
+    romance: { label: '로맨스', icon: '💗', desc: '설렘 · 질투 · 고백 직전', cards: [
+      ['r01', '스치는 손', '둘이 가까이 붙어 있는 순간', '손이나 어깨가 우연히 스친다. {char}는 아무렇지 않은 척하지만 반응이 미세하게 늦다.', { aff: 1 }],
+      ['r02', '질투', '{other}가 {user} 곁에 가까이 있을 때', '{char}가 괜히 말수가 줄거나 퉁명스러워진다. 이유는 끝까지 말하지 않는다.', { aff: 2 }],
+      ['r03', '달라진 호칭', '사이가 꽤 가까워졌을 때', '{char}가 평소와 다른 호칭으로 {user}를 불러 본다. 스스로도 조금 당황한다.', { aff: 3 }],
+      ['r04', '고백 직전', '감정이 무르익었지만 아직 말하지 않은 사이', '{char}가 무언가 말하려다 끝내 다른 말로 돌린다. 망설임이 보이게.', { aff: 4 }],
+      ['r05', '화난 척 걱정', '{user}가 다치거나 무리하거나 위험했을 때', '{char}가 잔소리하듯 화를 내지만, 사실은 걱정하고 있다는 게 행동에서 드러난다.', { aff: 2 }],
+      ['r06', '둘만의 비밀', '조용히 둘만 있는 시간', '{char}가 다른 사람에게는 말하지 않은 사소한 이야기를 {user}에게만 털어놓는다.', { aff: 2 }],
+      ['r07', '무심한 선물', '특별한 날이거나 고마운 일이 있은 뒤', '{char}가 대수롭지 않은 척 작은 선물을 건넨다. 고른 이유가 {char}답다.', { aff: 2 }],
+      ['r08', '한 발 물러서기', '{user} 쪽에서 적극적으로 다가올 때', '{char}가 바로 받아 주지 않고 장난스럽게 한 발 물러서며 여지를 남긴다.', { aff: 1 }],
+      ['r09', '너무 가까운 거리', '대화하다 서로 거리가 좁혀졌을 때', '{char}가 거리가 너무 가까워졌음을 깨닫고 잠깐 멈춘다. 눈을 피할지 말지 망설인다.', { aff: 3 }],
+      ['r10', '무방비', '밤이 깊었거나 둘 다 지쳤을 때', '{char}가 깜빡 졸거나 기대어 잠든다. 평소엔 보이지 않던 무방비한 모습.', { aff: 3 }],
+      ['r11', '조심스러운 이유', '마음이 가까워졌는데 {char}가 망설일 때', '{char}가 관계에 조심스러운 이유를 조금만 내비친다. 다 말하지는 않는다.', { aff: 3 }],
+      ['r12', '다음 약속', '둘이 함께할 다음 일정이 아직 없을 때', '{char}가 다음에 같이 할 일을 우회적으로 꺼낸다. 데이트라고 부르지는 않는다.', { aff: 2 }],
+      ['r13', '행동으로 화해', '둘 사이에 다툼이나 서운함이 있은 뒤', '{char}가 말로 사과하는 대신 행동으로 화해의 신호를 먼저 보낸다.'],
+      ['r14', '서운함', '{char}의 마음이 몰라준 것 같을 때', '{char}가 서운함을 티 내지 않으려 하지만 말끝이 짧아진다.', { aff: 1 }],
+      ['r15', '들켜 버린 사이', '{other}가 함께 있고 둘이 가까운 사이일 때', '{other}가 둘 사이를 눈치채고 놀린다. {char}는 아니라고 하지만 서툴다.', { aff: 2 }],
+      ['r16', '우산 하나', '비가 오거나 날씨가 궂을 때', '우산이나 피할 곳이 하나뿐인 상황이 생겨 둘이 가까이 있게 된다.', { aff: 1 }],
+      ['r17', '속으로 들뜸', '둘이 처음 함께 해 보는 일이 있을 때', '{char}가 겉으론 태연하지만 속으로 들떠 있다는 게 작은 행동으로 새어 나온다.', { aff: 2 }],
+      ['r18', '떠보기', '마음은 깊어졌는데 관계가 아직 애매할 때', '{char}가 장난처럼 둘이 어떤 사이인지 슬쩍 떠본다.', { aff: 4 }],
+      ['r19', '몰래 바라보기', '{user}가 다른 데 집중하고 있을 때', '{char}가 {user}를 오래 바라보다가 들킬 뻔하고 황급히 시선을 돌린다.', { aff: 2 }],
+      ['r20', '핑계 연락', '둘이 떨어져 있을 때', '{char}가 별일 아닌 핑계로 먼저 연락하거나 찾아온다.', { aff: 2 }],
+      ['r21', '그때의 속마음', '둘의 추억이 쌓였을 때', '{char}가 둘이 처음 만났던 때를 꺼내며 그때의 속마음 하나를 고백한다.', { aff: 4 }],
+      ['r22', '편 들어 주기', '{user}가 곤란하거나 부당한 대우를 받을 때', '{char}가 망설임 없이 {user} 편에 선다.', { aff: 1 }],
+      ['r23', '귀여운 독점욕', '아주 가까운 사이일 때', '{char}가 {user}의 시간이나 관심을 조금 더 갖고 싶다는 걸 귀엽게 드러낸다.', { aff: 5 }],
+      ['r24', '다정한 손길', '{user}가 지치거나 속상해 보일 때', '{char}가 말없이 머리를 쓰다듬거나 등을 토닥이는 등 작은 손길로 위로한다.', { aff: 3 }],
+    ] },
+    daily: { label: '일상', icon: '☕', desc: '소소한 하루 · 생활감', cards: [
+      ['d01', '같이 먹기', '식사 시간이거나 배가 고플 때', '함께 먹는 음식을 구체적으로 그리고, {char}의 입맛이나 먹는 습관을 하나 드러낸다.'],
+      ['d02', '사소한 고집', '편하게 같이 지내는 일상 장면', '리모컨, 마지막 한 조각 같은 사소한 일로 {char}가 장난스럽게 고집을 부린다.'],
+      ['d03', '날씨 변수', '바깥 날씨가 바뀌었을 때', '날씨 변화가 그날의 계획이나 기분에 작은 영향을 준다.'],
+      ['d04', '동네 사람', '동네나 가게, 길 위에 있을 때', '가게 주인 · 이웃 같은 동네 사람이 말을 걸어 일상의 결을 더한다.'],
+      ['d05', '루틴', '아침이나 잠들기 전', '{char}의 아침 또는 밤 루틴 하나를 보여 준다. 반복되는 습관이 캐릭터를 만든다.'],
+      ['d06', '작은 사고', '평온한 일상 장면이 이어질 때', '물을 쏟거나 물건을 잃어버리는 작은 사고가 생기고, 함께 수습한다.'],
+      ['d07', '오늘의 계획', '할 일이 정해지지 않은 한가한 때', '{char}가 오늘이나 주말에 무엇을 할지 들뜬 얼굴로 계획을 꺼낸다.'],
+      ['d08', '동물 손님', '바깥이나 창가에 있을 때', '길고양이나 새 같은 동물이 나타나 {char}가 성격대로 반응한다.'],
+      ['d09', '요즘 빠진 것', '느긋하게 이야기할 여유가 있을 때', '{char}가 요즘 빠진 취미를 열심히 설명하거나 같이 해 보자고 한다.'],
+      ['d10', '하루 정리', '하루가 끝나 가는 저녁이나 밤', '{char}가 오늘 있었던 일을 투덜대거나 털어놓으며 하루를 정리한다.'],
+      ['d11', '집안일', '집 안에서 함께 있을 때', '청소 · 빨래 · 설거지 같은 집안일을 하며 자연스럽게 대화가 이어진다.'],
+      ['d12', '옛날 사진', '방이나 서랍, 휴대폰을 정리할 때', '옛날 사진이나 물건이 나와 {char}의 과거 이야기가 조금 풀린다.'],
+      ['d13', '계절 풍경', '계절감이 드러날 만한 바깥 장면', '벚꽃 · 장마 · 낙엽 · 첫눈 같은 계절의 풍경이나 작은 행사를 장면에 끌어온다.'],
+      ['d14', '장보기', '음식이나 물건이 떨어졌을 때', '장을 보러 가서 {char}가 물건 고르는 기준과 고집이 드러난다.'],
+      ['d15', '감기 기운', '날씨가 차거나 무리한 뒤', '{char}가 가벼운 감기 기운을 보이고 괜찮다고 우긴다.'],
+      ['d16', '허둥지둥', '아침이거나 약속 시간이 다가올 때', '늦잠을 자거나 시간이 빠듯해져 허둥대는 상황이 생긴다.'],
+      ['d17', '뉴스 한 토막', '집에서 쉬거나 밥을 먹을 때', '틀어 둔 TV나 휴대폰 뉴스 한 토막이 대화거리가 된다.'],
+      ['d18', '새 가게', '밖을 걷거나 어디 갈지 고를 때', '근처에 새로 생긴 가게나 처음 보는 메뉴에 {char}가 호기심을 보인다.'],
+      ['d19', '멍때리기', '조용하고 할 일 없는 순간', '{char}가 창밖을 보다가 엉뚱한 생각을 불쑥 말한다.'],
+      ['d20', '갑작스런 칭찬', '편안한 분위기의 일상 대화', '{char}가 사소한 점을 갑자기 칭찬하고는 스스로 쑥스러워한다.'],
+    ] },
+    mystery: { label: '미스터리 · 스릴러', icon: '🔍', desc: '단서 · 의심 · 추격', cards: [
+      ['m01', '어긋난 단서', '조사나 추적이 진행 중일 때', '새 단서가 하나 나온다. 지금까지 알던 것과 살짝 어긋나서 의문을 키우는 단서로.'],
+      ['m02', '말의 틈', '{other}가 무언가를 설명하고 있을 때', '{other}의 말에 앞뒤가 맞지 않는 작은 틈이 보인다. {char}가 눈치챌지는 성격대로.'],
+      ['m03', '뒤따르는 기척', '밖을 이동하고 있을 때', '누군가 뒤를 따라오는 듯한 기척이 느껴진다. 확실하지는 않게.'],
+      ['m04', '시간 제한', '사건이 느슨하게 흘러갈 때', '해결해야 할 일에 기한이 생기거나 앞당겨진다.'],
+      ['m05', '숨기는 것', '{other}가 함께 있을 때', '{other}가 무언가 숨기고 있다는 작은 신호를 남긴다.'],
+      ['m06', '엉뚱한 방향', '단서를 쫓고 있을 때', '그럴듯하지만 사실은 엉뚱한 방향을 가리키는 증거가 나타난다.'],
+      ['m07', '겁먹은 목격자', '사건 주변을 탐문할 때', '무언가를 본 사람이 나타나지만 겁을 먹고 말을 아낀다.'],
+      ['m08', '익명의 경고', '진실에 가까워지고 있을 때', '익명의 경고나 위협이 도착한다. 누가 보냈는지는 밝히지 않는다.'],
+      ['m09', '단서 정리', '단서가 여러 개 쌓였을 때', '{char}가 지금까지의 단서를 짧게 정리하고, 빠진 조각 하나를 짚는다.'],
+      ['m10', '다녀간 흔적', '어떤 장소에 돌아왔거나 들어섰을 때', '있어야 할 물건이 사라졌거나 누군가 다녀간 흔적이 보인다.'],
+      ['m11', '너무 쉬운 길', '막혔던 일이 갑자기 풀릴 때', '너무 쉬워 보이는 길이 나타난다. 의심할 만한 작은 이상한 점을 하나 남긴다.'],
+      ['m12', '과거와의 연결', '사건의 배경이 궁금해질 때', '지금 사건이 예전의 다른 사건과 이어져 있을지 모른다는 연결고리가 보인다.'],
+      ['m13', '정보의 값', '{other}가 정보를 쥐고 있을 때', '{other}가 정보를 주는 대신 무언가를 요구한다.'],
+      ['m14', '고립', '실내에 있거나 밤일 때', '통신이 끊기거나 불이 나가 고립된다.'],
+      ['m15', '추격', '정체가 드러났거나 위험이 가까워졌을 때', '갑자기 추격이 시작된다. 짧은 문장으로 긴박하게.'],
+      ['m16', '지켜보던 눈', '안심하고 있던 순간', '누군가 멀리서 지켜보고 있었다는 사실을 알게 된다.'],
+      ['m17', '뒤집히는 결론', '결론이 거의 난 것처럼 보일 때', '지금의 결론을 뒤흔드는 사실 하나가 드러난다.'],
+      ['m18', '알리바이의 구멍', '{other}가 용의선상에 있을 때', '{other}의 알리바이에 작은 구멍이 생긴다.'],
+      ['m19', '암호 쪽지', '현장이나 소지품을 살필 때', '알 수 없는 기호나 암호가 적힌 쪽지가 발견된다.'],
+      ['m20', '떠보는 대화', '서로 믿기 어려운 사이가 마주했을 때', '겉으론 평범한 대화지만 서로 떠보는 긴장이 흐르게 쓴다.'],
+    ] },
+    fantasy: { label: '판타지 · 모험', icon: '🗡️', desc: '여정 · 마법 · 동료', cards: [
+      ['f01', '갈림길', '여정 중 길을 고를 때', '길이 두 갈래로 나뉘고, 각각의 위험과 이점이 조금씩 보인다.'],
+      ['f02', '습격', '이동하거나 야영하고 있을 때', '낯선 생물이 습격한다. 강하지만 대처할 수 있는 수준으로.'],
+      ['f03', '힘의 대가', '마법이나 특별한 힘을 쓴 직후', '힘을 쓴 대가(피로 · 부작용 · 흔적)가 나타난다.'],
+      ['f04', '낯선 풍습', '새로운 마을이나 장소에 도착했을 때', '그곳만의 풍습이나 규칙 하나를 보여 준다.'],
+      ['f05', '현지의 전설', '마을 사람들과 이야기할 때', '현지인이 이 지역에 얽힌 전설이나 소문을 들려준다. 나중에 쓸모 있을지도.'],
+      ['f06', '수수께끼 유물', '탐색하거나 전리품을 살필 때', '의미심장한 유물이나 아이템을 발견한다. 쓰임새는 아직 모른다.'],
+      ['f07', '모닥불', '밤이 되어 쉬어야 할 때', '모닥불 앞에서 쉬며 동료끼리 속 이야기를 나눈다.'],
+      ['f08', '적의 그림자', '여정이 순조로울 때', '아직 마주치지 않은 강적의 흔적이나 부하가 나타나 위협을 예고한다.'],
+      ['f09', '동료의 사정', '{other}가 함께 여행하고 있을 때', '{other}가 여정에 함께하는 진짜 이유의 일부를 내비친다.'],
+      ['f10', '자연의 시련', '험한 지형을 지날 때', '폭풍 · 절벽 · 늪 같은 자연의 시련이 앞을 막는다.'],
+      ['f11', '새 의뢰', '마을이나 길 위에서 사람을 만났을 때', '도움을 청하는 사람이 나타나 새 의뢰나 부탁을 한다.'],
+      ['f12', '떠돌이 상인', '길 위나 시장에 있을 때', '떠돌이 상인이 수상하지만 흥미로운 물건을 판다.'],
+      ['f13', '고대 유적', '오래된 장소를 탐색할 때', '오래된 유적에서 읽을 수 없는 문자나 장치가 발견된다.'],
+      ['f14', '각성의 조짐', '{char}가 위기에 몰렸을 때', '{char}의 능력이 예상치 못하게 반응하거나 성장의 조짐을 보인다.'],
+      ['f15', '정체를 아는 자', '사람이 많은 곳에 있을 때', '{char}나 일행의 정체를 알아보는 사람이 나타난다.'],
+      ['f16', '보급 문제', '긴 여정 중', '식량 · 물 · 돈이 부족해져 해결이 필요해진다.'],
+      ['f17', '축제에 휘말림', '마을에 머물고 있을 때', '마을의 축제나 의식에 우연히 휘말린다.'],
+      ['f18', '수상한 동료', '{other}와 함께 행동할 때', '{other}의 행동에서 의심스러운 점이 하나 보인다.'],
+      ['f19', '승리의 여운', '전투나 시련을 막 넘긴 직후', '승리 뒤의 피로와 안도, 그리고 남은 상처를 차분히 그린다.'],
+      ['f20', '지도 밖', '길을 잃었거나 새 길을 찾을 때', '지도에 없는 길이나 장소가 나타난다.'],
+    ] },
+    horror: { label: '공포', icon: '🕯️', desc: '불안 · 이상 징후 · 긴장', cards: [
+      ['h01', '설명 안 되는 소리', '조용하거나 어두운 곳에 있을 때', '멀리서 설명할 수 없는 소리가 들린다. 원인은 보여 주지 않는다.'],
+      ['h02', '미묘한 어긋남', '익숙한 장소에 돌아왔을 때', '무언가가 미묘하게 달라져 있다(문 위치, 사진 속 얼굴 등).'],
+      ['h03', '깜빡이는 불', '실내이거나 밤일 때', '조명이 깜빡이다가 꺼진다.'],
+      ['h04', '시선', '혼자거나 주변이 조용할 때', '보이지 않는 누군가가 지켜보는 감각이 든다.'],
+      ['h05', '사라진 사람', '{other}가 함께 있을 때', '잠깐 눈을 뗀 사이 {other}가 보이지 않는다.'],
+      ['h06', '금기', '낯선 장소를 살필 때', '하지 말라는 규칙이나 경고문이 발견된다.'],
+      ['h07', '가짜 안도', '위험이 지나간 것처럼 보일 때', '한숨 돌린 직후, 아직 끝나지 않았음을 암시하는 작은 신호를 남긴다.'],
+      ['h08', '몸의 공포', '긴장이 높아졌을 때', '소름 · 식은땀 · 숨 막힘 같은 몸의 공포 반응을 {char}에게 구체적으로 그린다.'],
+      ['h09', '반복', '이상한 일이 한 번 있었던 뒤', '같은 일이 다시 일어난다. 이번엔 조금 다르게.'],
+      ['h10', '흉내 내는 목소리', '어둡거나 일행이 흩어졌을 때', '익숙한 목소리가 있을 수 없는 곳에서 부른다.'],
+      ['h11', '남겨진 기록', '버려진 장소를 뒤질 때', '누군가 남긴 일기나 메모에 섬뜩한 내용이 있다.'],
+      ['h12', '숨죽이기', '무언가를 피해 숨어야 할 때', '숨을 곳이 좁고 어둡다. 소리를 내면 안 되는 긴장을 길게 끈다.'],
+      ['h13', '거울 속', '거울이나 유리 근처에 있을 때', '거울이나 창에 비친 모습이 실제와 미묘하게 어긋난다.'],
+      ['h14', '멈춘 시계', '시간을 확인할 때', '시계가 멈추거나 시간이 이상하게 흘러 있다.'],
+      ['h15', '있으면 안 될 것', '빈 방이나 복도를 지날 때', '있어선 안 될 곳에 인형이나 아이 물건이 놓여 있다.'],
+      ['h16', '냄새', '어떤 공간에 들어섰을 때', '썩은 냄새나 낯선 향이 어딘가에서 스며든다.'],
+      ['h17', '일부만', '공포의 정체가 가까워졌을 때', '그 존재가 아주 일부만 모습을 드러낸다. 전체는 보여 주지 않는다.'],
+      ['h18', '연락 두절', '도움이 필요할 때', '휴대폰이 터지지 않거나 바깥과 연락이 끊긴다.'],
+      ['h19', '낯선 표정', '{char}가 지쳐 있거나 이상한 일을 겪은 뒤', '{char}가 순간 평소와 다른 표정이나 말을 하고, 본인은 기억하지 못한다.'],
+      ['h20', '위험한 출구', '위협이 바짝 다가왔을 때', '도망칠 길이 하나 보이지만 위험을 감수해야 한다.'],
+    ] },
+  };
+
   function inject(messages, block) {
     const out = messages.map(m => ({ ...m }));
     let placed = false;
@@ -1733,6 +2064,25 @@ svg.graph:active{cursor:grabbing}
 .progress i{display:block;height:100%;background:var(--ac);transition:width .2s}
 .ok{color:var(--ok)}.err{color:var(--bad)}.warnc{color:var(--gold)}
 .hint{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.subbox{margin:4px 0 8px;padding:12px 14px;border-radius:12px;background:var(--bg2);border:1px solid var(--line)}
+.packs{display:flex;flex-wrap:wrap;gap:8px}
+.pk{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border-radius:999px;border:1px solid var(--line2);background:var(--s1);color:var(--tx2);font-size:13px;font-weight:600;white-space:nowrap}
+.pk small{color:var(--tx3);font-weight:500}
+.pk.on{background:var(--acbg);border-color:var(--acln);color:var(--tx)}
+.pk.dim{opacity:.55}
+.hscroll{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin:0 0 12px;scrollbar-width:none}
+.hscroll::-webkit-scrollbar{display:none}
+.hscroll .pk{flex:none}
+.dcard{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
+.dcard .t{flex:1;min-width:0}
+.dcard b{font-size:14px}
+.dcard .when{font-size:12px;color:var(--tx3);margin:3px 0 4px}
+.dcard .txt{font-size:13.5px;color:var(--tx2);line-height:1.55}
+.ph{color:var(--ac);font-weight:600}
+.subbox .help{font-size:12.5px;line-height:1.5;color:var(--tx3);font-weight:400}
+.dcard.off b,.dcard.off .txt,.dcard.off .when{opacity:.45}
+.scene{margin-top:10px;padding:12px;border-radius:12px;background:var(--acbg);border:1px solid var(--acln)}
+.scene .q{font-size:14px;line-height:1.6;margin-top:8px;color:var(--tx)}
 .hint .chip{display:inline-block;white-space:normal;line-height:1.45;text-align:left}
 pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;border-radius:10px;background:var(--bg2);border:1px solid var(--line);color:var(--tx2);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-height:320px;overflow:auto}
 .trace{font-size:12.5px;color:var(--tx2);padding:8px 0;border-bottom:1px solid var(--line)}
@@ -1899,12 +2249,20 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
           ${open.length ? `<div class="col">${open.map(promiseHtml).join('')}</div>` : `<div class="empty small" style="padding:14px">${settings.story ? '아직 약속이 없어요. 대화에서 약속이나 계획이 나오면 여기 모여요.' : '이야기 기록을 켜면 약속을 모아 줘요.'}</div>`}
         </section>
         <section class="card">
-          <div class="field inline" style="padding-top:0"><div><div class="lb">${icon('spark', 16)} 감독 힌트</div><div class="help">답장마다 템포 · 꺼낼 약속 · 먼저 움직일 인물 · 분위기를 Jev가 골라 짧게 귀띔해요. 회상과 같은 호출이라 비용이 거의 안 늘어요.</div></div>${sw('director', settings.director, 'quick')}</div>
-          ${settings.director ? (hint ? `<div class="hint">${hint.pace ? `<span class="chip ac">템포 · ${PACE_KO[hint.pace]}</span>` : ''}${hint.mood ? `<span class="chip">분위기 · ${MOOD_KO[hint.mood]}</span>` : ''}${hint.spot ? `<span class="chip">먼저 · ${escapeHtml(hint.spot)}</span>` : ''}${hint.thread ? `<span class="chip gold">약속 · ${escapeHtml(clip(hint.thread.text, 30))}</span>` : ''}</div>` : '<div class="xs dim">다음 답장부터 보여요.</div>') : ''}
+          <div class="field inline" style="padding-top:0"><div><div class="lb">${icon('spark', 16)} 감독</div><div class="help">템포 · 분위기 · 꺼낼 약속에, 연출 카드 중 지금 장면에 맞는 걸 Jev가 골라 짧게 귀띔해요. 회상과 같은 호출이라 호출 수는 안 늘어요.</div></div>${sw('director', settings.director, 'quick')}</div>
+          ${settings.director ? directorBox(hint) : ''}
         </section>
       </div>
       ${recent.length ? `<section class="card"><div class="ch"><h2>최근 일어난 일</h2><span class="sp"></span><span class="meta">사건 카드</span></div><div class="list">${recent.map(cd => `<button class="item" data-act="chunk" data-ck="${escapeHtml(`${timeline[cd.mi].key}:${cd.pos}`)}">${avatar(cd.who, 'sm')}<div class="t"><b>${escapeHtml(cardText(cd))}</b><span>#${cd.mi + 1}</span></div></button>`).join('')}</div></section>` : ''}
       <div class="kpis">${kpiBox(st.messages, '채팅 메시지')}${kpiBox(`${st.indexedMsgs}<span class="dim" style="font-size:14px">/${st.sendable}</span>`, '색인된 이전 메시지')}${kpiBox(st.people, '인물')}${kpiBox(`${st.kb}KB`, '이 기기에 저장')}</div>`;
+  }
+
+  function directorBox(hint) {
+    const n = allDirCards().length;
+    const chips = hint ? `${hint.pace ? `<span class="chip ac">템포 · ${PACE_KO[hint.pace]}</span>` : ''}${hint.mood ? `<span class="chip">분위기 · ${MOOD_KO[hint.mood]}</span>` : ''}${hint.spot ? `<span class="chip">먼저 · ${escapeHtml(hint.spot)}</span>` : ''}${hint.thread ? `<span class="chip gold">약속 · ${escapeHtml(clip(hint.thread.text, 30))}</span>` : ''}` : '';
+    const scene = hint?.card ? `<div class="scene"><div class="row"><span class="chip ac">${escapeHtml(DIR_PACKS[hint.card.pack]?.icon ?? '✍️')} ${escapeHtml(hint.card.name)}</span><span class="sp"></span><button class="btn sm g" data-act="dir-off" data-id="${escapeHtml(hint.card.id)}">이 카드 그만</button></div><div class="q">${escapeHtml(hint.card.text)}</div></div>` : '';
+    return `${hint ? `<div class="hint">${chips}</div>${scene}${!hint.card && settings.dirCards ? '<div class="xs dim" style="margin-top:8px">이번엔 딱 맞는 연출 카드가 없어서 안 넣었어요.</div>' : ''}` : '<div class="xs dim">다음 답장부터 보여요.</div>'}
+      ${settings.dirCards ? `<div class="row" style="margin-top:10px"><button class="btn sm g" data-act="dircards">${icon('film', 16)} 연출 카드 ${n}장</button></div>` : ''}`;
   }
 
   function promiseHtml(t) {
@@ -2093,8 +2451,37 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   // ══ 시트: 인물 · 기억 ══
   function renderSheet() {
     const s = ui.sheet;
-    const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : '';
+    const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : s.type === 'dircards' ? dirSheet() : '';
     return `<div class="sheetbg" data-act="sheet-bg"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${inner}</div></div>`;
+  }
+  const PH = { char: '캐릭터', user: '나', other: '다른 인물' };
+  const PH_J = { 이: ['이', '가'], 가: ['이', '가'], 은: ['은', '는'], 는: ['은', '는'], 을: ['을', '를'], 를: ['을', '를'], 과: ['과', '와'], 와: ['과', '와'] };
+  const ph = (t) => escapeHtml(t).replace(/{(char|user|other)}(이|가|은|는|을|를|과|와)?/g, (_, k, j) => `<span class="ph">${PH[k]}</span>${j ? PH_J[j][hasBatchim(PH[k]) ? 0 : 1] : ''}`);
+  function dirSheet() {
+    const cfg = settings, pid = ui.sheet.pack ?? 'basic';
+    const off = new Set(cfg.dirOff);
+    const list = packCards(pid, cfg);
+    const editing = pid === 'custom' && ui.sheet.edit ? cfg.dirCustom.find(c => c.id === ui.sheet.edit) : null;
+    const tags = (c) => [c.aff != null ? `<span class="tag">${c.aff >= 0 ? `가까움 ${c.aff}+` : `사이 나쁨 ${c.aff}↓`}</span>` : '', c.promise ? '<span class="tag">약속 있을 때</span>' : '', /\{other\}/.test(c.text + c.when) ? '<span class="tag">다른 인물 필요</span>' : ''].join('');
+    const form = pid !== 'custom' ? '' : `<div class="subbox" style="margin-bottom:12px">
+        <div class="lb" style="margin-bottom:8px">${editing ? '카드 고치기' : '새 카드'}</div>
+        <div class="col">
+          <input class="inp" id="dc-name" maxlength="40" placeholder="이름 (예: 말없는 질투)" value="${escapeHtml(editing?.name ?? '')}">
+          <input class="inp" id="dc-when" maxlength="160" placeholder="언제 (예: {other}가 {user} 곁에 있을 때)" value="${escapeHtml(editing?.when ?? '')}">
+          <textarea class="inp" id="dc-text" rows="3" maxlength="400" placeholder="연출 (예: {char}가 괜히 말수가 줄어든다. 이유는 말하지 않는다.)">${escapeHtml(editing?.text ?? '')}</textarea>
+          <div class="help">{char}는 캐릭터, {user}는 나, {other}는 장면의 다른 인물 이름으로 바뀌어요. 내 행동이나 말은 정하지 않게 쓰는 게 좋아요.</div>
+          <div class="row"><input class="inp" id="dc-aff" type="number" inputmode="numeric" min="-10" max="10" placeholder="가까움 조건 (비우면 없음)" value="${editing?.aff ?? ''}" style="flex:1;min-width:150px"><button class="btn p" data-act="dir-save">${editing ? '저장' : '추가'}</button>${editing ? '<button class="btn g" data-act="dir-cancel">취소</button>' : ''}</div>
+        </div></div>`;
+    const items = list.length ? list.map(c => `<div class="dcard${off.has(c.id) ? ' off' : ''}"><div class="t"><b>${escapeHtml(c.name)}</b> ${tags(c)}<div class="when">언제 · ${ph(c.when || '—')}</div><div class="txt">${ph(c.text)}</div>${pid === 'custom' ? `<div class="row" style="margin-top:6px"><button class="btn sm g" data-act="dir-edit" data-id="${escapeHtml(c.id)}">고치기</button><button class="btn sm g" data-act="dir-del" data-id="${escapeHtml(c.id)}">지우기</button></div>` : ''}</div><label class="sw"><input type="checkbox" data-dir-toggle="${escapeHtml(c.id)}"${off.has(c.id) ? '' : ' checked'} aria-label="${escapeHtml(c.name)} 쓰기"><span></span></label></div>`).join('')
+      : '<div class="empty small">아직 내 카드가 없어요. 위에서 하나 만들어 보세요.</div>';
+    const io = pid !== 'custom' ? '' : `<details class="more"${keepOpen('dir-io', false)}><summary>가져오기 · 내보내기</summary>
+        <div class="help" style="margin:6px 0">카드 묶음(JSON)을 붙여 넣고 가져오기를 누르면 내 카드에 더해져요. 친구와 나눌 땐 아래 글을 복사하세요.</div>
+        <textarea class="inp" id="dc-json" rows="5" spellcheck="false">${escapeHtml(JSON.stringify(cfg.dirCustom.map(({ name, when, text, aff, promise }) => ({ name, when, text, ...(aff != null ? { aff } : {}), ...(promise ? { promise } : {}) })), null, 1))}</textarea>
+        <div class="row" style="margin-top:8px"><button class="btn" data-act="dir-import">가져오기</button><button class="btn g" data-act="dir-copy">복사</button></div></details>`;
+    return `<div class="sh"><div class="t"><h3>연출 카드</h3><div class="small muted">켠 카드 중 지금 장면에 가까운 8장을 추리고, Jev가 하나를 고르거나 안 골라요.</div></div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
+      <div class="hscroll">${packChips(cfg, 'dsheet-pack', pid)}</div>
+      ${cfg.dirPacks.includes(pid) ? '' : `<div class="alert warn" style="margin-bottom:10px"><div class="t"><b>이 묶음은 꺼져 있어요</b><div class="d">켜야 이 카드들을 써요.</div></div><button class="btn" data-act="dirpack" data-v="${pid}">켜기</button></div>`}
+      ${form}${items}${io}`;
   }
   function personSheet(name) {
     const p = story.people[name];
@@ -2148,7 +2535,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     return `<div class="onb">${steps}<h2>기억하는 방식</h2><p class="lead">나중에 설정에서 언제든 바꿀 수 있어요.</p>
       <div class="card"><div class="lb" style="font-weight:600;margin-bottom:8px">얼마나 넣을까요?</div>${presetSeg(cur)}
         <div class="field inline" style="margin-top:8px"><div><div class="lb">인물 · 관계 · 약속 기록</div><div class="help">답장이 온 뒤 뒤에서 정리해요. 보내기는 느려지지 않아요.</div></div>${sw('story', d.story)}</div>
-        <div class="field inline"><div><div class="lb">감독 힌트</div><div class="help">답장마다 템포와 분위기를 짧게 귀띔해요.</div></div>${sw('director', d.director)}</div></div>
+        <div class="field inline"><div><div class="lb">감독 힌트</div><div class="help">답장마다 템포 · 분위기와 장면에 맞는 연출을 짧게 귀띔해요. 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div></div>
       <div class="card small muted">토큰을 아끼려면 Risu 설정에서 <b>최대 컨텍스트</b>나 <b>채팅 범위</b>를 줄이세요. 줄어든 만큼 JevArchive가 옛날 대화에서 필요한 부분만 넣어요. Risu 자체 메모리(하이파 · 수파)는 꺼 두세요.</div>
       ${nav(true, 'onb-finish', '완료')}</div>`;
   }
@@ -2200,6 +2587,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <details class="more"${keepOpen('embed-addr', d.embedPreset === 'custom')}><summary>주소 (보통은 안 바꿔요)</summary><input class="inp" data-field="embedEndpoint" value="${escapeHtml(d.embedEndpoint)}"></details>` : ''}
       <div class="row" style="margin-top:10px"><button class="btn" data-act="test-embed">연결 테스트</button>${testLine('embed')}</div>`;
   }
+  function packChips(cfg, act, cur) {
+    const packs = [...Object.entries(DIR_PACKS).map(([k, p]) => [k, p.icon, p.label, p.cards.length]), ['custom', '✍️', '내 카드', cfg.dirCustom.length]];
+    return packs.map(([k, ic, label, n]) => `<button class="pk${(cur ? cur === k : cfg.dirPacks.includes(k)) ? ' on' : ''}${!cur || cfg.dirPacks.includes(k) ? '' : ' dim'}" data-act="${act}" data-v="${k}">${ic} ${escapeHtml(label)}<small>${n}</small></button>`).join('');
+  }
   function renderSettings(st) {
     const d = ui.draft ?? (ui.draft = { ...settings });
     const num = (k, min, max) => `<input class="inp" type="number" inputmode="numeric" min="${min}" max="${max}" data-field="${k}" value="${escapeHtml(d[k])}" style="max-width:140px">`;
@@ -2224,7 +2615,14 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">답장 뒤 뒤에서 · 보내기는 안 느려져요</span></div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><label>사건 카드</label><div class="help">"누가 → 누구에게: 무엇을" 카드를 만들어 인물 페이지에 보여 주고, 기억을 찾는 열쇠로도 써요. 넣는 건 여전히 원문이에요. Jev 질문이 꽤 늘어요(그래도 싸요).</div></div>${sw('cards', d.cards)}</div>
-        <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 꺼낼 약속 · 먼저 움직일 인물 · 분위기를 짧게 귀띔해요. 회상과 같은 Jev 호출이에요.</div></div>${sw('director', d.director)}</div>
+        <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 분위기 · 꺼낼 약속을 짧게 귀띔해요. 회상과 같은 Jev 호출이라 호출 수는 안 늘어요. 이야기를 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div>
+        ${d.director ? `<div class="subbox">
+          <div class="field inline" style="padding-top:0"><div><label>연출 카드</label><div class="help">미리 써 둔 연출 중 지금 장면에 맞는 걸 Jev가 골라 한 줄 넣어요. 맞는 게 없으면 안 넣어요.</div></div>${sw('dirCards', d.dirCards)}</div>
+          ${d.dirCards ? `<div class="field inline"><div><label>장르 자동 맞춤</label><div class="help">Jev가 이 채팅의 장르를 보고, 맞는 장르 묶음만 써요. 기본 · 내 카드는 늘 써요.${(() => { const g = activeGenres(); const K = { romance: '로맨스', daily: '일상', mystery: '미스터리', fantasy: '판타지', horror: '공포' }; return g ? ` 지금 이 채팅: <b>${g.map(x => K[x]).join(' · ')}</b>` : ' 몇 번 보내면 판단해요.'; })()}</div></div>${sw('dirAuto', d.dirAuto)}</div>
+          <div class="lb" style="margin:6px 0 8px">얼마나 자주</div><div class="seg">${Object.entries(DIR_FREQ_KO).map(([k, [t, sub]]) => `<button class="${d.dirFreq === k ? 'on' : ''}" data-act="dirfreq" data-v="${k}">${t}<small>${sub}</small></button>`).join('')}</div>
+          <div class="lb" style="margin:14px 0 8px">쓸 묶음</div><div class="packs">${packChips(d, 'dirpack')}</div>
+          <div class="row" style="margin-top:12px"><button class="btn" data-act="dircards">${icon('film', 16)} 카드 보기 · 추가 (${allDirCards(d).length}장 켜짐)</button></div>` : ''}
+        </div>` : ''}
       </section>
       <section class="card"><div class="ch"><h2>넣는 방식</h2></div>
         <div class="field"><label>넣는 위치</label><select class="sel" data-field="injectMode"><option value="last_user"${d.injectMode === 'last_user' ? ' selected' : ''}>최신 입력 바로 앞</option><option value="system"${d.injectMode === 'system' ? ' selected' : ''}>시스템 메시지로</option></select><div class="help">프롬프트에 <b>[jevarchive]</b>를 써 두면 그 자리에 들어가요.</div></div>
@@ -2292,6 +2690,14 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     setSaved('저장됨');
     setTimeout(() => { if (ui.saved === '저장됨') setSaved(''); }, 2000);
     if (embedProfile() !== before) toast('임베딩이 바뀌었어요. 다음에 보낼 때(또는 지금 전부 색인) 다시 색인해요.');
+  }
+  async function patchSettings(p) {
+    const inSettings = ui.view === 'settings' && !ui.onboard;
+    const base = inSettings ? readForm(ui.draft ?? settings) : settings;
+    const next = { ...base, ...p };
+    if (inSettings) ui.draft = next;
+    await saveSettings(next);
+    if (inSettings && ui.draft === next) ui.draft = { ...settings };
   }
   function pickPreset(d, f, value) {
     if (f === 'jevPreset') { const p = JEV_PRESETS[value]; return { ...d, jevPreset: value, jevEndpoint: p.endpoint, jevModel: p.model }; }
@@ -2362,7 +2768,17 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       if (ui.onboard) currentDraft(); else scheduleSettingsSave();
       return;
     }
-    if (el.dataset?.field) { if (ui.onboard) currentDraft(); else scheduleSettingsSave(); }
+    if (el.dataset?.dirToggle) {
+      const id = el.dataset.dirToggle, off = new Set(settings.dirOff);
+      if (el.checked) off.delete(id); else off.add(id);
+      await patchSettings({ dirOff: [...off] });
+      el.closest('.dcard')?.classList.toggle('off', !el.checked);
+      return;
+    }
+    if (el.dataset?.field) {
+      if (ui.onboard) currentDraft(); else scheduleSettingsSave();
+      if (!ui.onboard && ['director', 'dirCards', 'story'].includes(el.dataset.field)) render();
+    }
   }
   async function leaveSettings() {
     if (ui.view === 'settings' && !ui.onboard) { ui.draft = readForm(ui.draft ?? settings); await flushSettingsSave(); ui.draft = null; }
@@ -2391,6 +2807,60 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'gzoom': { const f = Number(el.dataset.f); const g = ui.graph; const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
       case 'greset': ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
+      case 'dircards': ui.sheet = { type: 'dircards', pack: 'basic', edit: null }; render(); return;
+      case 'dsheet-pack': ui.sheet = { ...ui.sheet, pack: el.dataset.v, edit: null }; render(); document.querySelector('.sheet')?.scrollTo?.(0, 0); return;
+      case 'dirfreq': await patchSettings({ dirFreq: el.dataset.v }); render(); return;
+      case 'dirpack': {
+        const packs = new Set(settings.dirPacks);
+        if (packs.has(el.dataset.v)) packs.delete(el.dataset.v); else packs.add(el.dataset.v);
+        await patchSettings({ dirPacks: [...packs] });
+        render();
+        return;
+      }
+      case 'dir-off': {
+        await patchSettings({ dirOff: [...new Set([...settings.dirOff, el.dataset.id])] });
+        toast('이 카드는 이제 안 써요. 연출 카드 목록에서 다시 켤 수 있어요.');
+        render();
+        return;
+      }
+      case 'dir-edit': ui.sheet = { ...ui.sheet, edit: el.dataset.id }; render(); document.querySelector('.sheet')?.scrollTo?.(0, 0); return;
+      case 'dir-cancel': ui.sheet = { ...ui.sheet, edit: null }; render(); return;
+      case 'dir-del': {
+        const c = settings.dirCustom.find(x => x.id === el.dataset.id);
+        if (!c || !await confirmDialog(`"${c.name}" 카드를 지울까요?`, '지우기', true)) return;
+        await patchSettings({ dirCustom: settings.dirCustom.filter(x => x.id !== c.id) });
+        render();
+        return;
+      }
+      case 'dir-save': {
+        const v = (id) => document.getElementById(id)?.value?.trim() ?? '';
+        const card = { name: v('dc-name'), when: v('dc-when'), text: v('dc-text'), aff: v('dc-aff') };
+        if (!card.name || !card.text) { toast('이름과 연출은 꼭 써 주세요.'); return; }
+        const editId = ui.sheet.edit;
+        const list = editId ? settings.dirCustom.map(x => (x.id === editId ? { ...x, ...card, id: editId } : x)) : [...settings.dirCustom, { ...card, id: `u${Date.now().toString(36)}` }];
+        await patchSettings({ dirCustom: list, dirPacks: [...new Set([...settings.dirPacks, 'custom'])] });
+        ui.sheet = { ...ui.sheet, edit: null };
+        toast(editId ? '고쳤어요.' : '추가했어요. 장면이 맞으면 Jev가 골라요.');
+        render();
+        return;
+      }
+      case 'dir-import': {
+        let data;
+        try { data = JSON.parse(document.getElementById('dc-json')?.value ?? ''); } catch { toast('JSON 모양이 아니에요.'); return; }
+        const incoming = sanitizeDirCards(Array.isArray(data) ? data : data?.cards);
+        const have = new Set(settings.dirCustom.map(c => `${c.name}|${c.text}`));
+        const fresh = incoming.filter(c => !have.has(`${c.name}|${c.text}`)).map((c, i) => ({ ...c, id: `u${Date.now().toString(36)}${i}` }));
+        if (!fresh.length) { toast('새로 더할 카드가 없어요.'); return; }
+        await patchSettings({ dirCustom: [...settings.dirCustom, ...fresh], dirPacks: [...new Set([...settings.dirPacks, 'custom'])] });
+        toast(`카드 ${fresh.length}장을 더했어요.`);
+        render();
+        return;
+      }
+      case 'dir-copy': {
+        const t = document.getElementById('dc-json')?.value ?? '';
+        try { await navigator.clipboard.writeText(t); toast('복사했어요.'); } catch { document.getElementById('dc-json')?.select?.(); toast('글을 길게 눌러 복사해 주세요.'); }
+        return;
+      }
       case 'preset': {
         const p = MEMORY_PRESETS[el.dataset.v];
         if (!p) return;
@@ -2523,7 +2993,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory,
       renderNow, renderPeople, renderPromises, renderMemory, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
