@@ -1,5 +1,5 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 0.1.0
+//@display-name 🏛️JevArchive 0.1.1
 //@api 3.0
 //@version 0.1.1
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
