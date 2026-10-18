@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.8
+//@version 0.0.9
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -819,7 +819,7 @@
   function directorLine(h) {
     const bits = [];
     if (h.pace) bits.push(`pace=${h.pace}`);
-    if (h.thread) bits.push(`bring up: ${h.thread.who}${h.thread.to ? ` → ${h.thread.to}` : ''}: "${h.thread.text}"`);
+    if (h.thread) bits.push(`bring up the open promise #${h.thread.mi + 1} (${h.thread.who}${h.thread.to ? ` → ${h.thread.to}` : ''})`);
     if (h.spot) bits.push(`spotlight: ${h.spot}`);
     if (h.mood) bits.push(`mood: ${h.mood}`);
     const line = bits.length ? `Director hint (optional; the user's direction comes first): ${bits.join('; ')}` : '';
@@ -855,14 +855,18 @@
     });
     const th = openThreads().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-3);
     for (const t of th) {
-      out.push(`Open promise: ${t.who}${t.to ? ` → ${t.to}` : ''}: "${t.text}" (#${t.mi + 1})`);
+      out.push(`Open promise: ${t.who}${t.to ? ` → ${t.to}` : ''}: "${tagLine(t)}" (#${t.mi + 1})`);
       out.ko.push({ t: `약속 · ${t.who}${t.to ? ` → ${t.to}` : ''}: ${clip(t.text, 48)}`, c: 'gold' });
     }
     // 비밀: 숨기는 사람이나 숨기는 상대가 장면에 있을 때. 화면 칩에는 내용을 안 보여 준다 (스포일러)
     for (const t of openSecrets().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-2)) {
       const from = t.to ?? 'the others';
-      out.push(`Secret: ${t.who} hides from ${from}: "${t.text}" — ${from} does not know this yet. Keep it hidden unless the story itself reveals it.`);
+      out.push(`Secret: ${t.who} hides from ${from}: "${tagLine(t)}" — ${from} does not know this yet. Keep it hidden unless the story itself reveals it.`);
       out.ko.push({ t: `비밀 · ${t.who} (${t.to ?? '모두'} 모르게)`, c: 'sec' });
+    }
+    if ([...openThreads(), ...openSecrets()].some(t => t.tags?.some(g => g.r !== 'none') && out.some(l => l.includes(tagLine(t))))) {
+      out.splice(out[0]?.startsWith('Now:') ? 1 : 0, 0, 'Slots (auto, may be rough): who/with/whom/when/where/what/how/why, X=empty');
+      out.ko.splice(0, 0);
     }
     return out;
   }
@@ -917,6 +921,8 @@
     const head = [...sLines, ...(dLine ? [dLine] : [])];
     let headText = head.join('\n');
     while (head.length && estimateTokens(headText) > cfg.budget * 0.3) { head.splice(head.length - (dLine ? 2 : 1), 1); headText = head.join('\n'); }
+    const legend = head.findIndex(l => l.startsWith('Slots ('));
+    if (legend >= 0 && !head.some(l => /^(Open promise|Secret):/.test(l))) { head.splice(legend, 1); headText = head.join('\n'); }
     let used = estimateTokens(headText);
 
     const take = new Map();
@@ -1134,6 +1140,23 @@
   const SECRET_CUE = /비밀|숨기|숨겨|숨긴|감추|감춰|모르게|몰래|말하지\s*마|말하지\s*않|말\s*못|들키|들킬|정체|사실은|아무도\s*모르|아무한테도|secret|hiding|hidden/u;
   const isSecret = (t) => t.kind === 'secret';
   function openThreads() { return story.threads.filter(t => t.status === 'open' && !isSecret(t)); }
+  // ── 6하원칙 칸: 문장을 어절로 나눠 어절마다 Jev가 칸을 고른다 (실제 Jev로 문장 6개 · 질문 56개에 0.7초) ──
+  const ROLES = { who: 'who does it (the doer / subject)', with: 'together with whom (a companion who does it with them)', whom: 'to whom, or kept from whom (the target of the action)', when: 'when (time, date, timing)', where: 'where (place)', what: 'what is done or what it is about (object, action, the fact itself)', how: 'how (manner, means)', why: 'why (reason, purpose)', none: 'none of these (filler, ending, or connective)' };
+  const ROLE_KO = { who: '누가', with: '누구랑', whom: '누구에게', when: '언제', where: '어디서', what: '무엇을', how: '어떻게', why: '왜' };
+  const ROLE_ORDER = ['who', 'with', 'whom', 'when', 'where', 'what', 'how', 'why'];
+  const tagWords = (text) => unquote(text).split(/\s+/).filter(Boolean).slice(0, 24);
+  function groupTags(words, roleOf) {
+    const out = [];
+    words.forEach((w, k) => { const r = ROLES[roleOf(k)] ? roleOf(k) : 'none'; if (out.length && out[out.length - 1].r === r) out[out.length - 1].w += ` ${w}`; else out.push({ w, r }); });
+    return out;
+  }
+  /** 모델에게 보낼 칸 줄: 누가/누구랑/누구에게/언제/어디서/무엇을/어떻게/왜 순서로 슬래시, 빈 칸은 X, 끝쪽 빈 칸은 생략 */
+  function tagLine(t) {
+    if (!t.tags?.some(g => g.r !== 'none')) return t.text;
+    const slots = ROLE_ORDER.map(r => t.tags.filter(g => g.r === r).map(g => g.w).join(' ') || 'X');
+    while (slots.length && slots[slots.length - 1] === 'X') slots.pop();
+    return slots.join('/');
+  }
   function openSecrets() { return story.threads.filter(t => t.status === 'open' && isSecret(t)); }
 
   /** 아직 이야기 분석을 안 한 메시지 (Risu가 안 보낸 것 중) */
@@ -1362,6 +1385,17 @@
           newCards.push({ mi: j.mi, cd: { pos: j.pos, who: who ?? 'none', to: to ?? 'none', what: clip(unquote(what), 200), how: who !== 'none' && ph >= 0.5 ? how : 'neutral', imp: Math.round(imp * 100) / 100 } });
         });
       } catch (error) { setError('이야기 분석', error); }
+    }
+    // 6하원칙 칸: 칸이 없는 열린 약속 · 비밀 (새로 생긴 것 먼저) 몇 개를 한 번에. 실패해도 원문으로 쓴다
+    const tagJobs = story.threads.filter(t => t.status === 'open' && !t.tags).slice(-4);
+    if (tagJobs.length) {
+      const tq = {};
+      tagJobs.forEach((t, i) => tagWords(t.text).forEach((w, k) => { tq[`w${i}_${k}`] = { type: 'choice', instructions: `In the sentence «${unquote(t.text)}», which role does the word «${w}» play?`, criteria: ROLES }; }));
+      try {
+        const ta = await callJev(tagJobs.map(t => unquote(t.text)).join('\n'), tq);
+        if (moved()) return 0;
+        tagJobs.forEach((t, i) => { t.tags = groupTags(tagWords(t.text), k => topChoice(ta[`w${i}_${k}`])[0]); });
+      } catch (error) { setError('6하원칙 칸', error); }
     }
     // 카드 저장 + 찾기 열쇠(임베딩)
     if (newCards.length) {
@@ -2000,6 +2034,10 @@ a{color:var(--ac)}
 .chip.ac{background:var(--acbg);border-color:var(--acln);color:var(--tx)}
 .chip.gold{background:rgba(244,184,96,.12);border-color:rgba(244,184,96,.35);color:#ffd9a0}
 .chip.warm{background:rgba(255,134,176,.12);border-color:rgba(255,134,176,.35);color:#ffc2d8}
+.slots{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.slot{display:inline-flex;align-items:baseline;gap:5px;padding:3px 8px;border-radius:8px;background:var(--s2);border:1px solid var(--line);font-size:12.5px;color:var(--tx);font-weight:500}
+.slot i{font-style:normal;font-size:10.5px;font-weight:700;color:var(--tx3)}
+.slot.r-who i{color:#8c9eff}.slot.r-whom i{color:#ff86b0}.slot.r-with i{color:#ffb38a}.slot.r-when i{color:#f4b860}.slot.r-where i{color:#4cd0a0}.slot.r-what i{color:#c6cbe0}.slot.r-how i{color:#6cb4ff}.slot.r-why i{color:#dccbff}
 .chip.sec{background:rgba(180,140,255,.12);border-color:rgba(180,140,255,.35);color:#dccbff}
 .spoil{filter:blur(6px);cursor:pointer;transition:filter .2s ease;border-radius:6px;user-select:none}
 .spoil.show{filter:none;user-select:text}
@@ -2359,7 +2397,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const done = t.status !== 'open', sec = isSecret(t);
     const L = sec ? { done: '드러남', dropped: '비밀 아님', open: '다시 숨기기' } : { done: '지켜짐', dropped: '취소됨', open: '다시 열기' };
     const who = sec ? `🤫 ${escapeHtml(t.who || '누군가')} <span class="dim">(${t.to ? `${escapeHtml(t.to)} 모르게` : '모두 모르게'})</span>` : `${escapeHtml(t.who || '누군가')}${t.to ? ` → ${escapeHtml(t.to)}` : ''}`;
-    const text = sec ? `<span class="spoil" data-act="spoil" title="눌러서 보기 · 다시 누르면 가리기">“${escapeHtml(t.text)}”</span>` : `“${escapeHtml(t.text)}”`;
+    const slots = t.tags?.some(g => g.r !== 'none') ? `<div class="slots">${t.tags.filter(g => g.r !== 'none').map(g => `<span class="slot r-${g.r}"><i>${ROLE_KO[g.r]}</i>${escapeHtml(g.w)}</span>`).join('')}</div>` : '';
+    const text = sec ? `<span class="spoil" data-act="spoil" title="눌러서 보기 · 다시 누르면 가리기">“${escapeHtml(t.text)}”${slots}</span>` : `“${escapeHtml(t.text)}”${slots}`;
     return `<div class="promise${sec ? ' secret' : ''}">${avatar(t.who || '?', 'sm')}<div style="flex:1;min-width:0">
         <div class="who">${who}</div>
         <div class="q">${text}</div>
