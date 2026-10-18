@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -198,6 +198,7 @@
       cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      jevParallel: [1, 2, 3].includes(Number(s.jevParallel)) ? Number(s.jevParallel) : 2,
       jevPrice: Number.isFinite(Number(s.jevPrice)) && Number(s.jevPrice) >= 0 && s.jevPrice !== '' && s.jevPrice != null ? Number(s.jevPrice) : 0.042,
       memForm: s.memForm === 'slots' ? 'slots' : 'sentence',
       dirCards: s.dirCards !== false,
@@ -1502,8 +1503,10 @@
     const key = chatKey;
     const tr = beginTrace('story');
     storyJob = (async () => {
-      if (ftodo.length) await timed(tr, '칸 줄 만들기', () => factMessages(ftodo), `메시지 ${ftodo.length}개`);
-      if (todo.length && chatKey === key) await timed(tr, '이야기 분석', () => analyzeMessages(todo), `메시지 ${todo.length}개`);
+      const facts1 = () => (ftodo.length ? timed(tr, '칸 줄 만들기', () => factMessages(ftodo), `메시지 ${ftodo.length}개`) : null);
+      const story1 = () => (todo.length && chatKey === key ? timed(tr, '이야기 분석', () => analyzeMessages(todo), `메시지 ${todo.length}개`) : null);
+      if ((settings.jevParallel ?? 2) >= 2) await Promise.all([facts1(), story1()]);
+      else { await facts1(); await story1(); }
       const tl = chatKey === key ? tagBacklog() : [];
       if (tl.length) await timed(tr, '칸 나누기', () => tagLater(tl), `문장 ${tl.length}개`);
     })()
@@ -1526,8 +1529,19 @@
       let done = 0;
       try {
         await timed(tr, '전부 정리', async () => {
-          for (let i = 0; i < ftodo.length && chatKey === room; i += 8) { await factMessages(ftodo.slice(i, i + 8)); done = Math.min(ftodo.length, i + 8); onProgress?.(done, total); }
-          for (let i = 0; i < todo.length && chatKey === room; i += 8) { await analyzeMessages(todo.slice(i, i + 8)); done = ftodo.length + Math.min(todo.length, i + 8); onProgress?.(done, total); }
+          const par = Math.max(1, Math.min(3, settings.jevParallel ?? 2));
+          let fDone = 0, sDone = 0;
+          const tick = () => { done = fDone + sDone; onProgress?.(done, total); };
+          const batches = [];
+          for (let i = 0; i < ftodo.length; i += 8) batches.push(ftodo.slice(i, i + 8));
+          let next = 0;
+          const factLanes = (n) => Promise.all(Array.from({ length: Math.max(1, Math.min(n, batches.length)) }, async () => {
+            while (next < batches.length && chatKey === room) { const b = batches[next++]; await factMessages(b); fDone += b.length; tick(); }
+          }));
+          const storyLane = async () => { for (let i = 0; i < todo.length && chatKey === room; i += 8) { const b = todo.slice(i, i + 8); await analyzeMessages(b); sDone += b.length; tick(); } };
+          if (par === 1) { await factLanes(1); await storyLane(); }
+          else if (!todo.length) await factLanes(par);
+          else await Promise.all([factLanes(par - 1), storyLane()]);
         }, () => `${done}/${total}`);
       } finally { endTrace(tr); }
       await flushStory();
@@ -2677,7 +2691,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭에는 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 사람이 안 잡히는 건 기억 탭에만.', '설정 › Jev에 "동시 요청 1 · 2 · 3". 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요).']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -2882,10 +2896,13 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       if ((f.w ?? 3) < WORTH_LOW) continue;   // 기억 탭에서 회색(가벼운 말)은 빼고
       const kind = f.k === 'secret' ? 'secret' : 'promise';
       if (caught.has(`${kind === 'secret' ? 's' : 'p'}:${f.mi}`)) continue;
-      const author = timeline[f.mi]?.role === 'user' ? personaCache : characterCache.name;
-      const names = peopleIn(f.sent);
+      const names = peopleIn(f.sent).filter(n => !isTitleName(n));
+      const me = timeline[f.mi]?.role === 'user' && personaCache ? (personList().find(p => p.kind === 'persona')?.name ?? personaCache) : null;
+      const who = me ?? names[0];
+      if (!who) continue;   // 누구 약속인지 모르면 약속 탭에는 안 넣는다 (기억 탭에는 그대로)
+      const to = names.find(n => n !== who) ?? null;
       const key = factKey(f);
-      out.push({ src: 'mem', key, kind, text: unquote(f.sent), who: names[0] ?? author ?? '', to: kind === 'secret' ? null : (names.find(n => n !== names[0]) ?? null), mi: f.mi, ck: `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`, status: st[key] ?? 'open' });
+      out.push({ src: 'mem', key, kind, self: !to && kind !== 'secret', text: unquote(f.sent), who, to: kind === 'secret' ? null : to, mi: f.mi, ck: `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`, status: st[key] ?? 'open' });
     }
     return out;
   }
@@ -2897,7 +2914,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const tAttr = t.src === 'mem' ? `data-act="fthread" data-key="${escapeHtml(t.key)}"` : `data-act="thread" data-id="${t.id}"`;
     const done = t.status !== 'open', sec = isSecret(t);
     const L = sec ? { done: '드러남', dropped: '비밀 아님', open: '다시 숨기기' } : { done: '지켜짐', dropped: '취소됨', open: '다시 열기' };
-    const who = sec ? `🤫 ${escapeHtml(t.who || '누군가')} <span class="dim">(${t.to ? `${escapeHtml(t.to)} 모르게` : '모두 모르게'})</span>` : `${escapeHtml(t.who || '누군가')}${t.to ? ` → ${escapeHtml(t.to)}` : ''}`;
+    const who = sec ? `🤫 ${escapeHtml(t.who || '누군가')} <span class="dim">(${t.to ? `${escapeHtml(t.to)} 모르게` : '모두 모르게'})</span>` : t.self ? `${escapeHtml(t.who)} <span class="dim">(혼자 다짐)</span>` : `${escapeHtml(t.who || '누군가')}${t.to ? ` → ${escapeHtml(t.to)}` : ''}`;
     const slots = t.tags?.some(g => g.r !== 'none') ? `<div class="slots">${t.tags.filter(g => g.r !== 'none').map(g => `<span class="slot r-${g.r}"><i>${ROLE_KO[g.r]}</i>${escapeHtml(g.w)}</span>`).join('')}</div>` : '';
     const text = sec ? `<span class="spoil" data-act="spoil" title="눌러서 보기 · 다시 누르면 가리기">“${escapeHtml(t.text)}”${slots}</span>` : `“${escapeHtml(t.text)}”${slots}`;
     return `<div class="promise${sec ? ' secret' : ''}">${avatar(t.who || '?', 'sm')}<div style="flex:1;min-width:0">
@@ -3327,6 +3344,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     return `<div class="opts">${Object.entries(JEV_PRESETS).map(([k, v]) => opt('jevPreset', k, d.jevPreset, v.label, v.desc, v.badge)).join('')}</div>
       <div class="field"><label>API 키 ${p.keyUrl ? `<a class="xs" href="${p.keyUrl}" target="_blank" rel="noopener">키 받는 곳 ↗</a>` : ''}</label><input class="inp" type="password" autocomplete="off" data-field="jevKey" placeholder="${escapeHtml(p.keyHint ?? 'API 키')}" value="${escapeHtml(d.jevKey)}">${keyHint(d)}</div>
       <div class="field"><label>모델</label>${modelPicker('jevModel', p, d.jevModel)}</div>
+      <div class="field inline"><div><label>동시 요청</label><div class="help">처음 정리처럼 많이 할 때 Jev에 몇 개씩 같이 보낼지. 비용은 같고 클수록 빨라요. 오류(429)가 자주 나면 1로.</div></div><select class="sel" data-field="jevParallel" style="width:auto;min-width:90px">${[1, 2, 3].map(n => `<option value="${n}"${Number(d.jevParallel ?? 2) === n ? ' selected' : ''}>${n}개</option>`).join('')}</select></div>
       <details class="more"${keepOpen('jev-addr', d.jevPreset === 'custom')}><summary>주소 (보통은 안 바꿔요)</summary><input class="inp" data-field="jevEndpoint" value="${escapeHtml(d.jevEndpoint)}"></details>
       <div class="row" style="margin-top:10px"><button class="btn" data-act="test-jev">연결 테스트</button>${testLine('jev')}</div>`;
   }
