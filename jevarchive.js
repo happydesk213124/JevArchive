@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 0.1.2
+//@display-name 🏛️JevArchive 0.1.3
 //@api 3.0
-//@version 0.1.2
+//@version 0.1.3
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1510,17 +1510,20 @@
     for (const p of ppl) for (const n of nameForms(p)) byForm.set(n.replace(/\s+/g, ''), p.name);
     const seen = new Set(story.notSame ?? []);
     const out = [];
+    const main = (n) => ['char', 'persona'].includes(story.people[n]?.kind);
     for (const p of ppl) {
-      if (p.kind === 'char' || p.kind === 'persona') continue;
       const m = p.name.replace(/\s+/g, '');
       const tail = NAME_TAIL.exec(m);
       if (!tail) continue;
-      const into = byForm.get(m.slice(0, -tail[1].length));
-      if (!into || into === p.name) continue;
-      const key = [p.name, into].sort().join('|');
+      const base = byForm.get(m.slice(0, -tail[1].length));
+      if (!base || base === p.name) continue;
+      // 보통은 끝소리 붙은 쪽(보민이)을 기본 이름(보민)에 합친다. 끝소리 쪽이 캐릭터 · 나(페르소나)면 반대로
+      let from = p.name, into = base;
+      if (main(from)) { if (main(into)) continue; [from, into] = [into, from]; }
+      const key = [from, into].sort().join('|');
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ from: p.name, into });
+      out.push({ from, into });
     }
     return out;
   }
@@ -2638,6 +2641,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
