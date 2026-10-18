@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 0.1.1
+//@display-name 🏛️JevArchive 0.1.2
 //@api 3.0
-//@version 0.1.1
+//@version 0.1.2
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence',
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -198,6 +198,7 @@
       cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      jevPrice: Number.isFinite(Number(s.jevPrice)) && Number(s.jevPrice) >= 0 && s.jevPrice !== '' && s.jevPrice != null ? Number(s.jevPrice) : 0.042,
       memForm: s.memForm === 'slots' ? 'slots' : 'sentence',
       dirCards: s.dirCards !== false,
       dirAuto: s.dirAuto !== false,
@@ -264,6 +265,7 @@
       try {
         const data = await fetchJson(cfg.jevEndpoint, init, JEV_TIMEOUT_MS, 'Jev');
         const answers = data?.answers ?? data;
+        noteJevUsage(data?.usage);
         if (!answers || typeof answers !== 'object') throw new Error('Jev 응답 형식이 이상해요.');
         stats.jevCalls++;
         recordCall('jev', nowMs() - t, Object.keys(questions).length);
@@ -2168,6 +2170,7 @@
     try {
       if (!ready() || !await ensureChat()) return messages;
       tr = beginTrace('send');
+      startSendUsage();
       const entries = chatEntries(messages);
       if (!entries.length) return messages;
       syncWindow(entries);
@@ -2550,6 +2553,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
       '기억을 문장으로: 메시지를 문장으로 나누고, Jev가 사건 · 행동 · 사실 · 약속 · 비밀만 골라 저장해요. 잡담 · 질문은 버려요.',
@@ -2714,6 +2718,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         </section>
       </div>
       ${recent.length ? `<section class="card"><div class="ch"><h2>최근 일어난 일</h2><span class="sp"></span><span class="meta">칸 줄 기억</span></div><div class="list">${recent.map(f => factItem(f)).join('')}</div></section>` : ''}
+      ${usageCard()}
       <div class="kpis">${kpiBox(st.messages, '채팅 메시지')}${kpiBox(st.facts ?? 0, '칸 줄 기억')}${kpiBox(st.people, '인물')}${kpiBox(`${st.kb}KB`, '이 기기에 저장')}</div>`;
   }
 
@@ -3115,6 +3120,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
+        <div class="field"><label>Jev 가격 (100만 토큰당 달러)</label><div class="help">"지금" 탭의 예상 비용 계산에만 써요.</div><div class="row" style="gap:6px;margin-top:8px"><span class="dim">$</span><input class="inp" type="number" inputmode="decimal" step="any" min="0" data-field="jevPrice" value="${escapeHtml(d.jevPrice)}" style="max-width:110px"><button class="btn sm g" data-act="usage-reset">사용량 초기화</button></div></div>
         <div class="field inline"><div><label>JevArchive 사용</label><div class="help">끄면 요청을 건드리지 않아요.</div></div>${sw('enabled', d.enabled)}</div>
         <div class="row" style="margin-top:8px"><button class="btn g" data-act="onboard">시작 안내 다시 보기</button><button class="btn g" data-act="settings-reset">기본값으로</button></div>
       </section>
@@ -3441,6 +3447,13 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         } catch (error) { ui.progress = ''; render(); toast(String(error?.message ?? error)); }
         return;
       }
+      case 'usage-reset':
+        if (!await confirmDialog('Jev 사용량 기록을 지울까요?\n(오늘 · 채팅별 · 전체 모두)', '지우기', true)) return;
+        resetUsage();
+        await flushUsage();
+        render();
+        toast('사용량을 지웠어요.');
+        return;
       case 'story-reset':
         if (!await confirmDialog('인물 · 관계 · 약속 · 사건 카드를 지울까요?\n고정한 기억과 원문 색인은 그대로예요.', '초기화', true)) return;
         await resetStory();
@@ -3456,6 +3469,49 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         toast('지웠어요.');
         return;
     }
+  }
+
+  // ── Jev 사용량 (응답에 오는 토큰 수를 모은다. 설정과 같은 저장소, 20초에 한 번) ──
+  const USAGE_KEY = `${KEY}usage`;
+  const zeroUse = () => ({ t: 0, n: 0 });
+  let usage;
+  function resetUsage() { usage = { total: zeroUse(), send: zeroUse(), days: {}, chats: {} }; }
+  resetUsage();
+  let usageTimer = null;
+  const dayKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  async function loadUsage() {
+    try {
+      let u = await R.pluginStorage.getItem(USAGE_KEY);
+      if (typeof u === 'string') u = JSON.parse(u);
+      if (u && typeof u === 'object' && u.total) usage = { total: u.total, send: u.send ?? zeroUse(), days: u.days ?? {}, chats: u.chats ?? {} };
+    } catch { }
+  }
+  function flushUsage() {
+    clearTimeout(usageTimer);
+    usageTimer = null;
+    const days = Object.keys(usage.days).sort();
+    for (const k of days.slice(0, Math.max(0, days.length - 31))) delete usage.days[k];
+    const chats = Object.entries(usage.chats).sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0));
+    for (const [k] of chats.slice(100)) delete usage.chats[k];
+    return Promise.resolve().then(() => R.pluginStorage.setItem(USAGE_KEY, usage)).catch(() => {});
+  }
+  function noteJevUsage(u) {
+    const t = (Number(u?.input_tokens) || 0) + (Number(u?.output_tokens) || 0);
+    if (!t) return;
+    const add = (b) => { b.t += t; b.n += 1; return b; };
+    add(usage.total);
+    add(usage.send);
+    add(usage.days[dayKey()] ??= zeroUse());
+    if (chatKey) add(usage.chats[chatKey] ??= zeroUse()).at = Date.now();
+    if (!usageTimer) usageTimer = setTimeout(flushUsage, 20000);
+  }
+  function startSendUsage() { usage.send = { ...zeroUse(), at: Date.now() }; }
+  const fmtTok = (t) => (t >= 1e8 ? `${(t / 1e8).toFixed(1)}억` : t >= 1e4 ? `${(t / 1e4).toFixed(t >= 1e6 ? 0 : 1)}만` : t.toLocaleString());
+  const fmtUsd = (t) => { const c = t / 1e6 * (settings.jevPrice ?? 0.042); return c === 0 ? '$0' : c < 0.0001 ? '<$0.0001' : `$${c < 0.01 ? c.toFixed(4) : c < 1 ? c.toFixed(3) : c.toFixed(2)}`; };
+  function usageCard() {
+    const b = [['방금 답장', usage.send], ['오늘', usage.days[dayKey()] ?? zeroUse()], ['이 채팅', usage.chats[chatKey] ?? zeroUse()], ['전체', usage.total]];
+    return `<section class="card"><div class="ch"><h2>Jev 사용량</h2><span class="sp"></span><span class="meta">100만 토큰당 $${settings.jevPrice ?? 0.042} 기준 · 예상</span></div>
+        <div class="kpis" style="margin:0">${b.map(([lb, x]) => `<div class="kpi"><b>${fmtTok(x.t)}<small class="dim" style="font-size:12px;font-weight:500"> 토큰</small></b><span>${lb} · ${fmtUsd(x.t)}${x.n ? ` · ${x.n}번` : ''}</span></div>`).join('')}</div></section>`;
   }
 
   // ── 바로가기 버튼 ──
@@ -3474,6 +3530,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 
   // ── 시작 ──
   await loadSettings();
+  await loadUsage();
   await initLocalStore();
   await R.registerSetting('JevArchive', () => openPanel(), '🏛️', 'html', 'jevarchive-settings');
   if (R.registerButton) {
@@ -3490,7 +3547,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         R.removeRisuReplacer('beforeRequest', beforeRequestHandler),
         R.removeRisuReplacer('afterRequest', afterRequestHandler),
         buttonPartId && R.unregisterUIPart ? R.unregisterUIPart(buttonPartId) : null,
-        flushVectors(), flushStory(), flushCards(), flushFacts(),
+        flushVectors(), flushStory(), flushCards(), flushFacts(), flushUsage(),
       ]);
     });
   }
