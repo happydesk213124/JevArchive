@@ -997,7 +997,7 @@
   // asked:   이미 Jev에게 "사람이야?"를 물어본 낱말 (결과와 상관없이 다시 안 묻는다)
 
   const STORY_KEY = (key) => `${KEY}story_${key}`;
-  const emptyStory = () => ({ v: 1, people: {}, pairs: {}, threads: [], pins: [], asked: [], rejected: [], notSame: [], analyzed: [], seq: 0, director: null, dirTurn: 0, dirRecent: [], genres: null });
+  const emptyStory = () => ({ v: 1, people: {}, pairs: {}, threads: [], pins: [], asked: [], rejected: [], notSame: [], memThreads: {}, analyzed: [], seq: 0, director: null, dirTurn: 0, dirRecent: [], genres: null });
   let story = emptyStory();
   let storyTimer = null;
   let storyChain = Promise.resolve();
@@ -2677,7 +2677,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -2730,10 +2730,11 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const xs = [...document.querySelectorAll('[data-x]')].map(el => [el.dataset.x, el.scrollLeft, el]);
     const st = storageStats();
     const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, news: renderNews, settings: renderSettings }[ui.view] ?? renderNow)(st);
-    const badge = { promises: st.threads + st.secrets > 0, now: !!statusAlerts(st).length, people: settings.story && fixItems().length > 0 };
+    const nThreads = openCount(false) + openCount(true);
+    const badge = { promises: nThreads > 0, now: !!statusAlerts(st).length, people: settings.story && fixItems().length > 0 };
     const label = escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '));
     setHtml(document.getElementById('ja-rail'), `<div class="brand"><span class="logo">🏛️</span>JevArchive</div>
-          ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && st.threads + st.secrets ? `<span class="cnt">${st.threads + st.secrets}</span>` : ''}</button>`).join('')}
+          ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && nThreads ? `<span class="cnt">${nThreads}</span>` : ''}</button>`).join('')}
           <div class="grow"></div>
           <div class="railstat">${statusPill(st)}<div class="xs dim" style="margin-top:8px">${label || '채팅방을 열어 주세요'}</div></div>`);
     setHtml(document.getElementById('ja-top'), `<h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1><span class="sub">${label}</span>${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}<button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>`);
@@ -2816,7 +2817,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <div class="hd">#${it.mi + 1} ${it.why === 'pin' ? '<span class="tag pin">고정</span>' : it.why === 'tail' ? '<span class="tag tail">방금 흐름</span>' : it.why === 'near' ? '<span class="tag">앞뒤</span>' : ''}<span class="meter"><i style="width:${Math.round(Math.min(3, it.lv) / 3 * 100)}%"></i></span></div>
         ${it.fact ? factChips(it.fact.k, it.fact.slots, it.text) : `<div class="txt">${escapeHtml(it.text)}</div>`}</button>`).join('')}</div>`
       : `<div class="empty"><div class="big">🎞️</div><b>아직 넣은 기억이 없어요</b>메시지를 보내면 이번 답장에 들어간 기억이 여기에 카드로 보여요.</div>`;
-    const open = openThreads().slice(-3).reverse();
+    const open = allThreads().filter(t => t.status === 'open' && !isSecret(t)).slice(-3).reverse();
+    const nOpenP = openCount(false), nOpenS = openCount(true);
     const recent = [];
     for (let i = facts.length - 1; i >= 0 && recent.length < 6; i--) if (facts[i].k === 'event' || facts[i].k === 'action') recent.push(facts[i]);
     const hint = story.director;
@@ -2837,9 +2839,9 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       </section>
       <div class="grid2">
         <section class="card">
-          <div class="ch"><h2>진행 중인 약속</h2><span class="sp"></span>${st.threads ? `<button class="btn sm g" data-act="go" data-view="promises">모두 ${st.threads}</button>` : ''}</div>
+          <div class="ch"><h2>진행 중인 약속</h2><span class="sp"></span>${nOpenP ? `<button class="btn sm g" data-act="go" data-view="promises">모두 ${nOpenP}</button>` : ''}</div>
           ${open.length ? `<div class="col">${open.map(promiseHtml).join('')}</div>` : `<div class="empty small" style="padding:14px">${settings.story ? '아직 약속이 없어요. 대화에서 약속이나 계획이 나오면 여기 모여요.' : '이야기 기록을 켜면 약속을 모아 줘요.'}</div>`}
-          ${st.secrets ? `<button class="item" data-act="go-secrets" style="margin-top:8px"><span style="font-size:18px">🤫</span><div class="t"><b>숨기는 비밀 ${st.secrets}개</b><span>내용은 가려 둬요 · 눌러서 보기</span></div></button>` : ''}
+          ${nOpenS ? `<button class="item" data-act="go-secrets" style="margin-top:8px"><span style="font-size:18px">🤫</span><div class="t"><b>숨기는 비밀 ${nOpenS}개</b><span>내용은 가려 둬요 · 눌러서 보기</span></div></button>` : ''}
         </section>
         <section class="card">
           <div class="field inline" style="padding-top:0"><div><div class="lb">${icon('spark', 16)} 감독</div><div class="help">템포 · 분위기 · 꺼낼 약속에, 연출 카드 중 지금 장면에 맞는 걸 Jev가 골라 짧게 귀띔해요. 회상과 같은 호출이라 호출 수는 안 늘어요.</div></div>${sw('director', settings.director, 'quick')}</div>
@@ -2862,6 +2864,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   /** 칸 줄을 칩으로: [사건] 누가 하윤이 · 언제 … */
   function factChips(k, slots, sent) {
     const kind = k && FACT_KO[k] ? `<span class="slot kind k-${k}">${FACT_KO[k]}</span>` : '';
+    if (k === 'secret') return `<div class="slots">${kind}<span class="slot spoil" data-act="spoil" title="눌러서 보기">${escapeHtml(sent ?? slots.filter(Boolean).join(' '))}</span></div>`;
     if (!TAG_KINDS.has(k) || !slots.some(Boolean)) return `<div class="slots">${kind}<span class="slot">${escapeHtml(sent ?? slots.filter(Boolean).join(' '))}</span></div>`;
     return `<div class="slots">${kind}${ROLE_ORDER.map((r, i) => (slots[i] ? `<span class="slot r-${r}"><i>${ROLE_KO[r]}</i>${escapeHtml(slots[i])}</span>` : '')).join('')}</div>`;
   }
@@ -2869,7 +2872,29 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const ck = `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`;
     return `<button class="item" data-act="chunk" data-ck="${escapeHtml(ck)}" style="align-items:flex-start"><div class="t"><div class="row xs dim" style="margin-bottom:2px">#${f.mi + 1} · ${timeline[f.mi]?.role === 'user' ? '나' : escapeHtml(characterCache.name || '캐릭터')}${story.pins.includes(ck) ? ' <span class="tag pin">고정</span>' : ''}</div>${factChips(f.k, f.slots, f.sent)}${q ? `<div class="snip xs dim" style="margin-top:4px">${highlight(f.sent, q)}</div>` : ''}</div></button>`;
   }
+  /** 기억 탭의 약속 · 비밀 문장을 약속 탭 줄 모양으로. 이야기 정리가 같은 메시지에서 이미 잡은 건 뺀다 */
+  function memThreads() {
+    const caught = new Set(story.threads.map(t => `${t.kind === 'secret' ? 's' : 'p'}:${t.mi}`));
+    const st = story.memThreads ?? {};
+    const out = [];
+    for (const f of facts) {
+      if (f.k !== 'promise' && f.k !== 'secret') continue;
+      if ((f.w ?? 3) < WORTH_LOW) continue;   // 기억 탭에서 회색(가벼운 말)은 빼고
+      const kind = f.k === 'secret' ? 'secret' : 'promise';
+      if (caught.has(`${kind === 'secret' ? 's' : 'p'}:${f.mi}`)) continue;
+      const author = timeline[f.mi]?.role === 'user' ? personaCache : characterCache.name;
+      const names = peopleIn(f.sent);
+      const key = factKey(f);
+      out.push({ src: 'mem', key, kind, text: unquote(f.sent), who: names[0] ?? author ?? '', to: kind === 'secret' ? null : (names.find(n => n !== names[0]) ?? null), mi: f.mi, ck: `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`, status: st[key] ?? 'open' });
+    }
+    return out;
+  }
+  /** 약속 탭에 보이는 전부: 이야기 정리로 잡은 것 + 기억에서 온 것, 메시지 순서대로 */
+  function allThreads() { return [...story.threads, ...memThreads()].sort((a, b) => a.mi - b.mi); }
+  const openCount = (sec) => allThreads().filter(t => t.status === 'open' && isSecret(t) === sec).length;
+
   function promiseHtml(t) {
+    const tAttr = t.src === 'mem' ? `data-act="fthread" data-key="${escapeHtml(t.key)}"` : `data-act="thread" data-id="${t.id}"`;
     const done = t.status !== 'open', sec = isSecret(t);
     const L = sec ? { done: '드러남', dropped: '비밀 아님', open: '다시 숨기기' } : { done: '지켜짐', dropped: '취소됨', open: '다시 열기' };
     const who = sec ? `🤫 ${escapeHtml(t.who || '누군가')} <span class="dim">(${t.to ? `${escapeHtml(t.to)} 모르게` : '모두 모르게'})</span>` : `${escapeHtml(t.who || '누군가')}${t.to ? ` → ${escapeHtml(t.to)}` : ''}`;
@@ -2879,7 +2904,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <div class="who">${who}</div>
         <div class="q">${text}</div>
         <div class="row xs dim"><button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(t.ck)}">#${t.mi + 1} 원문</button>${done ? `<span class="chip ${t.status === 'done' ? (sec ? 'sec' : 'ac') : ''}">${L[t.status]}${sec && t.status === 'done' && t.closedMi != null ? ` · #${t.closedMi + 1}` : ''}</span>` : ''}</div>
-      </div><div class="acts">${done ? `<button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="open" aria-label="${L.open}" title="${L.open}">${icon('refresh', 18)}</button>` : `<button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="done" aria-label="${L.done}" title="${L.done}">${icon('check', 18)}</button><button class="iconbtn" data-act="thread" data-id="${t.id}" data-to="dropped" aria-label="${L.dropped}" title="${L.dropped}">${icon('close', 18)}</button>`}</div></div>`;
+      </div><div class="acts">${done ? `<button class="iconbtn" ${tAttr} data-to="open" aria-label="${L.open}" title="${L.open}">${icon('refresh', 18)}</button>` : `<button class="iconbtn" ${tAttr} data-to="done" aria-label="${L.done}" title="${L.done}">${icon('check', 18)}</button><button class="iconbtn" ${tAttr} data-to="dropped" aria-label="${L.dropped}" title="${L.dropped}">${icon('close', 18)}</button>`}</div></div>`;
   }
 
   // ══ 인물 · 관계도 ══
@@ -3038,10 +3063,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   // ══ 약속 ══
   function renderPromises() {
     const kind = ui.tkind ?? 'promise', sec = kind === 'secret';
-    const all = story.threads.filter(t => isSecret(t) === sec).slice().reverse();
+    const all = allThreads().filter(t => isSecret(t) === sec).reverse();
     const open = all.filter(t => t.status === 'open'), closed = all.filter(t => t.status !== 'open');
     const show = ui.threads === 'open' ? open : closed;
-    const nP = story.threads.filter(t => !isSecret(t) && t.status === 'open').length, nS = story.threads.filter(t => isSecret(t) && t.status === 'open').length;
+    const nP = openCount(false), nS = openCount(true);
     if (sec) return `<div class="seg" role="tablist"><button class="" data-act="tkind" data-v="promise">🎗️ 약속 ${nP}</button><button class="on" data-act="tkind" data-v="secret">🤫 비밀 ${nS}</button></div>
       <div class="seg" role="tablist"><button class="${ui.threads === 'open' ? 'on' : ''}" data-act="ttab" data-v="open">숨기는 중 ${open.length}</button><button class="${ui.threads === 'closed' ? 'on' : ''}" data-act="ttab" data-v="closed">드러남 · 끝 ${closed.length}</button></div>
       ${show.length ? `<div class="xs dim" style="margin:-4px 2px 0">내용은 스포일러라 가려 둬요. 눌러야 보여요.</div><div class="col">${show.map(promiseHtml).join('')}</div>` : `<div class="card"><div class="empty"><div class="big">🤫</div><b>${ui.threads === 'open' ? '숨기는 비밀이 없어요' : '드러난 비밀이 없어요'}</b>${settings.story ? '누가 누구에게 무언가를 숨기면 Jev가 모아 두고, 그 사람이 알게 되면 "드러남"으로 닫아요. 둘이 장면에 있을 때 "아직 모름"을 짧게 귀띔해서 모델이 아는 척하지 않게 해요.' : '설정 › 이야기에서 기록을 켜 주세요.'}</div></div>`}`;
@@ -3108,7 +3133,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const pinned = first.some(f => story.pins.includes(`${timeline[mi]?.key ?? 'x'}:${f.pos}`));
     const who = timeline[mi]?.role === 'user' ? '나' : escapeHtml(characterCache.name || '캐릭터');
     return `<button class="mcard" data-act="chunk" data-ck="${escapeHtml(ck)}"><div class="mh"><b>#${mi + 1} · ${who}</b>${c.dt ? `<span>${escapeHtml(c.dt)}</span>` : ''}${c.place ? `<span>· ${escapeHtml(clip(c.place, 24))}</span>` : ''}${pinned ? '<span>📌</span>' : ''}</div>
-      ${first.map(f => `<div class="ml${(f.w ?? 3) < 1.5 ? ' low' : ''}">${FACT_KO[f.k] ? `<span class="slot kind k-${f.k}">${FACT_KO[f.k]}</span>` : ''}<span>${q ? highlight(f.sent, q) : escapeHtml(f.sent)}</span></div>`).join('')}</button>`;
+      ${first.map(f => `<div class="ml${(f.w ?? 3) < 1.5 ? ' low' : ''}">${FACT_KO[f.k] ? `<span class="slot kind k-${f.k}">${FACT_KO[f.k]}</span>` : ''}${f.k === 'secret' ? `<span class="spoil" data-act="spoil" title="눌러서 보기 · 다시 누르면 가리기">${escapeHtml(f.sent)}</span>` : `<span>${q ? highlight(f.sent, q) : escapeHtml(f.sent)}</span>`}</div>`).join('')}</button>`;
   }
   /** 문장 목록 → 메시지 카드 (order: 'new' | 'old' | 'keep' = 들어온 순서 그대로) */
   function msgCards(list, order, limit, q = '') {
@@ -3544,6 +3569,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'spoil': el.classList.toggle('show'); return;
       case 'go-secrets': await leaveSettings(); ui.view = 'promises'; ui.tkind = 'secret'; ui.threads = 'open'; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
+      case 'fthread': { const m = (story.memThreads ??= {}); if (el.dataset.to === 'open') delete m[el.dataset.key]; else m[el.dataset.key] = el.dataset.to; saveStory(); const sec = ui.tkind === 'secret'; toast(sec ? (el.dataset.to === 'open' ? '다시 숨긴 비밀로 옮겼어요' : el.dataset.to === 'done' ? '드러난 비밀로 옮겼어요' : '비밀 목록에서 뺐어요') : (el.dataset.to === 'open' ? '다시 열었어요' : el.dataset.to === 'done' ? '지켜진 약속으로 옮겼어요' : '취소된 약속으로 옮겼어요')); render(); return; }
       case 'relwho': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.who = el.dataset.who; p.lock = true; saveStory(); render(); } return; }
       case 'fix-merge': { const into = el.dataset.into || document.getElementById(el.dataset.sel)?.value; if (!into) { toast('합칠 사람을 고르세요'); return; } mergePeople(el.dataset.from, into); ui.layout = null; render(); toast(`${josa(el.dataset.from, '을', '를')} ${into}${hasBatchim(into) ? '과' : '와'} 합쳤어요.`); return; }
       case 'fix-no': markNotSame(el.dataset.a, el.dataset.b); render(); return;
