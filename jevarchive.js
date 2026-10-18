@@ -2628,6 +2628,15 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 .bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--tx3);margin-top:4px}
 .bar .meter{max-width:180px}
 .mbar{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0}
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tool{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;padding:14px;border-radius:14px;background:var(--s1,#141923);border:1px solid var(--line);color:var(--tx);font:inherit;cursor:pointer;min-width:0;transition:border-color .15s,background .15s}
+.tool:hover{border-color:var(--ac)}
+.tool:disabled{opacity:.55;cursor:default}
+.tool.p{border-color:rgba(140,158,255,.45);background:rgba(140,158,255,.08)}
+.tool .ic{font-size:20px;line-height:1;margin-bottom:6px}
+.tool b{font-size:14px}
+.tool span:not(.ic){font-size:12px;color:var(--tx3);line-height:1.45}
+@media (max-width:520px){.tool{padding:12px}}
 .fixcard{border-color:rgba(244,184,96,.35)}
 .fixrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)}
 .fixrow:last-child{border-bottom:0}
@@ -2721,7 +2730,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접).', '설정 › 도구를 "정리" · "백업" 타일로 정리하고, 초기화 · 지우기는 접어 뒀어요.', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -3434,19 +3443,28 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <div class="field inline"><div><label>JevArchive 사용</label><div class="help">끄면 요청을 건드리지 않아요.</div></div>${sw('enabled', d.enabled)}</div>
         <div class="row" style="margin-top:8px"><button class="btn g" data-act="onboard">시작 안내 다시 보기</button><button class="btn g" data-act="settings-reset">기본값으로</button></div>
       </section>
-      <section class="card"><div class="ch"><h2>도구</h2></div>
+      <section class="card"><div class="ch"><h2>정리</h2><span class="sp"></span><span class="meta">${st.storyLeft ? `남은 메시지 ${st.storyLeft}개` : '다 정리됐어요'}</span></div>
         ${ui.progress ? `<div class="small" style="margin-bottom:10px">${escapeHtml(ui.progress)}<div class="progress"><i style="width:${ui.progressPct ?? 30}%"></i></div></div>` : ''}
-        <div class="list">
-          ${[['story-all', '지금 전부 정리', `정리 안 된 이전 메시지 ${st.storyLeft}개. 칸 줄 기억 · 인물 · 관계 · 약속을 만들어요 (Jev).`, storyAll ? '정리 중…' : '정리', !!storyAll],
-             ['reread', '채팅 다시 읽기', '메시지를 고치거나 지웠는데 반영이 안 된 것 같을 때.', '다시 읽기', false]].map(([act, t, dsc, label, dis]) => `<div class="item"><div class="t"><b>${t}</b><span>${dsc}</span></div><button class="btn sm" data-act="${act}"${dis ? ' disabled' : ''}>${label}</button></div>`).join('')}
-          <div class="item"><div class="t"><b>채팅 로어북에 백업</b><span>기억 · 인물 · 관계 · 약속 · 비밀을 이 채팅 로어북에 저장해요. 채팅을 복사 · 이동하면 같이 따라가요. ${story.backup ? `마지막 백업 ${timeAgo(story.backup.at)} · 기억 ${story.backup.n}개 · ${story.backup.kb}KB` : '아직 백업 안 했어요.'}</span></div><button class="btn sm p" data-act="lore-backup">백업</button></div>
-          <div class="item"><div class="t"><b>로어북 백업에서 되살리기</b><span>이 채팅 로어북에 있는 백업으로 지금 기억을 바꿔요.</span></div><button class="btn sm" data-act="lore-restore">되살리기</button></div>
-          <div class="item"><div class="t"><b>파일로 내보내기</b><span>같은 내용을 JSON 파일로 저장해요.</span></div><button class="btn sm" data-act="json-export">내보내기</button></div>
-          <div class="item"><div class="t"><b>파일에서 가져오기</b><span>내보낸 JSON 파일로 이 채팅의 기억을 바꿔요. 지금 것은 덮어써져요.</span></div><label class="btn sm">파일 선택<input type="file" id="ja-imp" accept=".json,application/json" style="display:none"></label></div>
-          <div class="item"><div class="t"><b>이야기 기록 초기화</b><span>인물 · 관계 · 약속 · 비밀을 지워요. 칸 줄 기억과 고정은 그대로.</span></div><button class="btn sm d" data-act="story-reset">초기화</button></div>
-          <div class="item"><div class="t"><b>칸 줄 기억 지우기</b><span>이 채팅의 칸 줄 기억을 이 기기에서 지워요. 원문은 Risu 채팅에 그대로고, 다시 정리하면 돼요.</span></div><button class="btn sm d" data-act="clear">지우기</button></div>
+        <div class="tgrid">
+          <button class="tool${st.storyLeft ? ' p' : ''}" data-act="story-all"${storyAll ? ' disabled' : ''}><span class="ic">🧹</span><b>${storyAll ? '정리 중…' : '지금 전부 정리'}</b><span>안 된 메시지로 기억 · 인물 · 약속을 만들어요 (Jev)</span></button>
+          <button class="tool" data-act="reread"><span class="ic">🔄</span><b>채팅 다시 읽기</b><span>메시지를 고치거나 지웠는데 반영이 안 될 때</span></button>
         </div>
       </section>
+      <section class="card"><div class="ch"><h2>백업</h2><span class="sp"></span><span class="meta">${story.backup ? `마지막 ${timeAgo(story.backup.at)} · 기억 ${story.backup.n}개 · ${story.backup.kb}KB` : '아직 안 했어요'}</span></div>
+        <div class="help" style="margin:-4px 0 10px">기억 · 인물 · 관계 · 약속 · 비밀을 통째로 저장하고 되살려요.</div>
+        <div class="tgrid">
+          <button class="tool p" data-act="lore-backup"><span class="ic">📚</span><b>로어북에 백업</b><span>이 채팅 로어북에 저장 · 채팅을 복사 · 이동하면 같이 따라가요</span></button>
+          <button class="tool" data-act="lore-restore"><span class="ic">↩️</span><b>로어북에서 되살리기</b><span>로어북 백업으로 지금 기억을 바꿔요</span></button>
+          <button class="tool" data-act="json-export"><span class="ic">💾</span><b>파일로 내보내기</b><span>같은 내용을 JSON 파일로</span></button>
+          <label class="tool"><span class="ic">📂</span><b>파일에서 가져오기</b><span>내보낸 JSON으로 지금 기억을 바꿔요</span><input type="file" id="ja-imp" accept=".json,application/json" style="display:none"></label>
+        </div>
+      </section>
+      <section class="card"><details class="more" style="border:0;margin:0;padding:0"${keepOpen('danger', false)}><summary><b style="color:var(--tx)">초기화 · 지우기</b><span class="dim xs" style="margin-left:6px">되돌릴 수 없어요</span></summary>
+        <div class="list" style="margin-top:6px">
+          <div class="item"><div class="t"><b>이야기 기록 초기화</b><span>인물 · 관계 · 약속 · 비밀을 지워요. 문장 기억과 고정은 그대로.</span></div><button class="btn sm d" data-act="story-reset">초기화</button></div>
+          <div class="item"><div class="t"><b>문장 기억 지우기</b><span>이 채팅의 기억을 이 기기에서 지워요. 원문은 Risu 채팅에 그대로라 다시 정리하면 돼요.</span></div><button class="btn sm d" data-act="clear">지우기</button></div>
+        </div>
+      </details></section>
       <section class="card"><details class="more" style="border:0;margin:0;padding:0"${keepOpen('diag', false)}><summary><b style="color:var(--tx)">진단</b><span class="dim xs" style="margin-left:6px">단계별 걸린 시간</span></summary>
         ${sendTraces.length ? sendTraces.map(t => `<div class="trace"><div class="row" style="justify-content:space-between"><b>${t.kind === 'send' ? '보낼 때' : t.kind === 'story' ? '이야기 정리 (뒤에서)' : '색인'}</b><span class="dim">${timeAgo(t.at)} · <b style="color:var(--tx)">${secs(t.ms)}</b></span></div>${t.steps.map(x => `<div class="row" style="justify-content:space-between"><span>${escapeHtml(x.name)}${x.detail ? ` <span class="dim">· ${escapeHtml(x.detail)}</span>` : ''}</span><span>${secs(x.ms)}</span></div>`).join('')}${t.note ? `<div class="dim">${escapeHtml(t.note)}</div>` : ''}</div>`).join('') : '<div class="small dim">메시지를 보내면 쌓여요.</div>'}
         <div class="xs dim" style="margin-top:8px">Jev ${stats.jevCalls}번 · 임베딩 ${stats.embedCalls}번 (이번 실행)</div>
@@ -3662,12 +3680,22 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
       case 'dircards': ui.sheet = { type: 'dircards', pack: 'basic', edit: null }; render(); return;
       case 'dsheet-pack': ui.sheet = { ...ui.sheet, pack: el.dataset.v, edit: null }; render(); return;
-      case 'dirfreq': await patchSettings({ dirFreq: el.dataset.v }); render(); return;
+      case 'dirfreq': {
+        for (const b of el.parentElement.children) b.classList.toggle('on', b === el);
+        settings.dirFreq = el.dataset.v;
+        if (ui.draft) ui.draft.dirFreq = el.dataset.v;
+        setSaved('저장 중…');
+        void patchSettings({ dirFreq: el.dataset.v }).then(() => { setSaved('저장됨'); setTimeout(() => { if (ui.saved === '저장됨') setSaved(''); }, 1500); }, (error) => toast(String(error?.message ?? error)));
+        return;
+      }
       case 'dirpack': {
         const packs = new Set(settings.dirPacks);
         if (packs.has(el.dataset.v)) packs.delete(el.dataset.v); else packs.add(el.dataset.v);
-        await patchSettings({ dirPacks: [...packs] });
-        render();
+        if (el.classList.contains('pk')) el.classList.toggle('on', packs.has(el.dataset.v));
+        settings.dirPacks = [...packs];
+        if (ui.draft) ui.draft.dirPacks = [...packs];
+        setSaved('저장 중…');
+        void patchSettings({ dirPacks: [...packs] }).then(() => { setSaved('저장됨'); setTimeout(() => { if (ui.saved === '저장됨') setSaved(''); }, 1500); requestAnimationFrame(() => render()); }, (error) => toast(String(error?.message ?? error)));
         return;
       }
       case 'dir-off': {
