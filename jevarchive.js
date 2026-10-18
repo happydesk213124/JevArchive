@@ -1,18 +1,19 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.9
+//@version 0.1.0
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
 // ============================================================================
 // JevArchive — 대화를 그대로 간직하고, 지금 필요한 장면을 꺼내 주는 장기기억 (글 쓰는 모델 없이)
 //
-//  기억 (보낼 때)
-//    · Risu 요청에서 빠진 메시지만 조각내 임베딩한다 (Jev 없음, 버리는 문장 없음)
-//    · 회상: 임베딩 + 글자 + 사건 카드로 후보 → Jev가 0~3점 → 고른 원문 조각(+앞뒤)을 넣는다
-//  이야기 (답장 뒤, 뒤에서)
-//    · 인물 · 관계(가까워짐/멀어짐 · 사이) · 약속(열림/닫힘) · 사건 카드 · 이야기 시간(상태줄)
+//  기억 = 칸 줄 (보낸 뒤 뒤에서 만든다)
+//    · 문장마다 종류(사건 · 행동 · 사실 · 약속 · 비밀)와 누가/누구랑/누구에게/언제/어디서/무엇을/어떻게/왜.
+//      단어는 원문 그대로, 칸만 Jev가 고른다. 언제 · 어디서는 상태창으로 채운다. 칸 줄을 임베딩해 둔다
+//    · 회상: 칸 줄 지문 + 글자로 후보 → Jev가 0~3점 → 고른 칸 줄(+같은 메시지 이웃)을 넣는다
+//  이야기 (보낸 뒤, 뒤에서)
+//    · 인물 · 관계(가까워짐/멀어짐 · 사이) · 약속 · 비밀 · 이야기 시간(상태줄)
 //    · 감독 힌트(선택): 회상과 같은 Jev 호출에서 템포 · 꺼낼 약속 · 먼저 움직일 인물 · 분위기를 고른다
 //  저장
 //    · 원문은 Risu 채팅에 있으니 저장하지 않는다. 기기에는 벡터와 카드, 세이브 파일에는 설정과 이야기 장부(몇 KB)
@@ -87,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: true, director: false, intim: false,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence',
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -194,9 +195,10 @@
       tailTokens: clampNum(s.tailTokens, 120, 0, 2000),
       indexPerSend: clampNum(s.indexPerSend, 100, 1, 5000),
       story: s.story !== false,
-      cards: s.cards !== false,
+      cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      memForm: s.memForm === 'slots' ? 'slots' : 'sentence',
       dirCards: s.dirCards !== false,
       dirAuto: s.dirAuto !== false,
       dirFreq: DIR_FREQ[s.dirFreq] ? s.dirFreq : 'normal',
@@ -480,6 +482,7 @@
     timeline = []; chunks = []; msgStart = []; postings.clear();
     for (const m of tl) appendMessage(m);
     attachCardVecs();
+    rebuildFacts();
   }
 
   /** 마지막 요청 이후 timeline 끝을 이번 요청과 맞춘다. 겹치는 부분은 이번 요청 글로 바꾸고(고친 메시지), 새 것은 붙인다. */
@@ -587,7 +590,7 @@
     if (!id) return false;
     chatLabel = { char: id.char, chat: id.chat };
     if (id.key === chatKey) return true;
-    if (chatKey) { void flushVectors(); void flushStory(); void flushCards(); }
+    if (chatKey) { void flushVectors(); void flushStory(); void flushCards(); void flushFacts(); }
     chatKey = id.key;
     const persona = await personaName(id.chatObj);
     personaCache = persona && persona !== 'User' ? persona : '';
@@ -597,6 +600,7 @@
     await loadVectors(chatKey);
     await loadStory(chatKey);
     await loadCards(chatKey);
+    await loadFacts(chatKey);
     timeline = rawTimeline(id.chatObj);
     rebuildChunks();
     seedPeople();
@@ -872,20 +876,24 @@
   }
 
   /**
-   * 회상: 이번 요청에 실린 메시지보다 앞의 조각에서만 찾는다.
-   *  고정한 조각 → 최근 흐름 → Jev가 고른 조각(+앞뒤). 이야기 줄과 감독 힌트는 맨 위에 짧게.
+   * 회상: 이번 요청에 실린 메시지보다 앞의 칸 줄에서만 찾는다.
+   *  고정 → 방금 흐름(칸 줄이 아직 없으면 원문) → Jev가 고른 칸 줄(+같은 메시지 이웃). 이야기 줄과 감독 힌트는 맨 위에 짧게.
    */
+  const MEM_LEGEND = 'Memory lines (auto-extracted from the original words, may be rough): kind/who/with/whom/when/where/what/how/why, X=empty; kind E=event A=action F=fact P=promise S=secret. Promise and secret lines start at who.';
   async function recall(windowEntries, tr) {
     const cfg = settings;
-    const limit = msgStart[timeline.length - windowEntries.length] ?? chunks.length;
+    const limitMi = timeline.length - windowEntries.length;
     if (cfg.budget <= 0) return { block: '', picked: [], trace: { cands: 0 } };
     const present = presentCast(windowEntries);
     const latest = memText(windowEntries[windowEntries.length - 1]?.text ?? '');
     const ctx = windowEntries.slice(-3).map(m => memText(m.text)).join('\n').slice(-1500);
     const state = windowEntries.slice(-4).map(m => `[${m.role === 'user' ? 'USER' : 'STORY'}]\n${memText(m.text).slice(-1200)}`).join('\n\n');
+    const hasPool = facts.some(f => f.mi < limitMi);
     let qv = [];
-    if (limit) { try { qv = await timed(tr, '질문 임베딩', () => queryVecs([latest.slice(0, 2000) || ctx, ctx || latest])); } catch (error) { setError('임베딩', error); } }
-    const first = limit ? await timed(tr, '후보 찾기', async () => retrieve(qv, latest, new Set(), cfg.candidates, limit), () => '') : [];
+    if (hasPool) { try { qv = await timed(tr, '질문 임베딩', () => queryVecs([latest.slice(0, 2000) || ctx, ctx || latest])); } catch (error) { setError('임베딩', error); } }
+    const wantUpd = /지금|현재|아직|최신|요즘|바뀐|이제/u.test(latest);
+    const nMsg = Math.max(4, Math.round(cfg.candidates / 2)), cap = cfg.candidates * 4;
+    const first = hasPool ? await timed(tr, '후보 찾기', async () => retrieveBooks(qv, latest, new Set(), nMsg, cap, limitMi, wantUpd), () => `책 ${nMsg}권 · 문장 ${cap}개까지${wantUpd ? ' · 바뀐 것 먼저' : ''}`) : [];
     const dir = cfg.director && cfg.story && present.length ? directorQuestions(present, qv, ctx) : null;
     let levels = new Map(), need = 'none', jevOk = true, hint = null;
     try {
@@ -899,10 +907,10 @@
         story.director = hint;
         saveStory();
       }
-      if (need !== 'none' && limit) {
+      if (need !== 'none' && hasPool) {
         let qn = [];
         try { qn = await queryVecs([`${NEED_QUERY[need] ?? ''} ${latest}`.slice(0, 2000)]); } catch { }
-        const more = retrieve([...qn, ...qv.slice(0, 1)], latest, new Set(first.map(c => c.id)), Math.ceil(cfg.candidates / 2), limit);
+        const more = retrieveBooks([...qn, ...qv.slice(0, 1)], latest, new Set(first.books ?? []), Math.ceil(nMsg / 2), Math.ceil(cap / 2), limitMi, wantUpd);
         if (more.length) {
           const r2 = await timed(tr, '2차 검색', () => judge(more, state, false), () => `${need} · ${more.length}개`);
           for (const [id, lv] of r2.levels) levels.set(id, lv);
@@ -911,51 +919,63 @@
     } catch (error) {
       jevOk = false;
       setError('Jev 채점', error);
-      first.slice(0, 5).forEach((c, i) => levels.set(c.id, 2 - i * 0.01));
+      first.slice(0, 6).forEach((f, i) => levels.set(f.id, 2 - i * 0.01));
     }
-    const scored = [...levels].map(([id, lv]) => ({ c: chunks[id], lv })).filter(x => x.lv >= KEEP_LEVEL).sort((a, b) => b.lv - a.lv || b.c.id - a.c.id);
+    const scored = [...levels].map(([id, lv]) => ({ f: facts[id], lv })).filter(x => x.f && x.lv >= KEEP_LEVEL).sort((a, b) => b.lv - a.lv || b.f.id - a.f.id);
 
-    // 이야기 줄은 예산의 30%까지
+    // 이야기 줄은 예산의 30%까지 (형식 설명은 아래에서 한 번만)
     const sLines = storyLines(present, timeline.length);
     const dLine = hint ? directorLine(hint) : '';
-    const head = [...sLines, ...(dLine ? [dLine] : [])];
+    const head = [...sLines.filter(l => !l.startsWith('Slots (')), ...(dLine ? [dLine] : [])];
     let headText = head.join('\n');
     while (head.length && estimateTokens(headText) > cfg.budget * 0.3) { head.splice(head.length - (dLine ? 2 : 1), 1); headText = head.join('\n'); }
-    const legend = head.findIndex(l => l.startsWith('Slots ('));
-    if (legend >= 0 && !head.some(l => /^(Open promise|Secret):/.test(l))) { head.splice(legend, 1); headText = head.join('\n'); }
-    let used = estimateTokens(headText);
+    let used = estimateTokens(headText) + estimateTokens(MEM_LEGEND);
 
-    const take = new Map();
-    const cost = (c) => estimateTokens(c.text) + 4;
-    const add = (c, pri) => { if (!c || c.id >= limit || take.has(c.id)) return false; const k = cost(c); if (used + k > cfg.budget) return false; take.set(c.id, pri); used += k; return true; };
-    for (const ck of story.pins) add(chunkByCk(ck), 9);
+    const units = new Map();
+    const factCost = (f) => estimateTokens(cfg.memForm === 'sentence' ? f.sent : f.line) + 3;
+    const rawCost = (c) => estimateTokens(c.text) + 4;
+    const addFact = (f, pri) => { if (!f || f.mi >= limitMi || units.has(`f${f.id}`)) return false; const k = factCost(f); if (used + k > cfg.budget) return false; units.set(`f${f.id}`, { f, pri }); used += k; return true; };
+    const addRaw = (c, pri) => { if (!c || c.mi >= limitMi || units.has(`c${c.id}`)) return false; const k = rawCost(c); if (used + k > cfg.budget) return false; units.set(`c${c.id}`, { c, pri }); used += k; return true; };
+    // 고정: 그 조각의 칸 줄, 아직 없으면 원문
+    for (const ck of story.pins) { const c = chunkByCk(ck); if (!c) continue; const fs = factsOfChunk(c); if (fs.length) fs.forEach(f => addFact(f, 9)); else if (!factStore.has(timeline[c.mi]?.key)) addRaw(c, 9); }
+    // 방금 흐름: 창 바로 앞 메시지부터. 칸 줄이 있으면 칸 줄, 아직 안 만들었으면 원문 (보낸 뒤에 만들어서 막 밀려난 건 아직 없다)
     let tail = 0;
-    for (let id = limit - 1; id >= 0 && tail < cfg.tailTokens; id--) { const k = cost(chunks[id]); if (tail + k > cfg.tailTokens && tail > 0) break; if (add(chunks[id], 0)) tail += k; }
-    for (const x of scored) add(x.c, x.lv);
-    if (cfg.neighbor > 0) for (const x of scored.filter(y => y.lv >= 2)) for (let d = 1; d <= cfg.neighbor; d++) { add(chunks[x.c.id - d], 0.5); add(chunks[x.c.id + d], 0.5); }
-
-    const picked = [...take.keys()].sort((a, b) => a - b).map(id => chunks[id]);
-    const lines = [];
-    let prev = null;
-    for (const c of picked) {
-      const role = timeline[c.mi]?.role === 'user' ? 'user' : 'char';
-      if (prev && prev.mi === c.mi && prev.id === c.id - 1) lines[lines.length - 1] += ' ' + c.text;
-      else lines.push(`<#${c.mi + 1} ${role}${prev && prev.mi === c.mi ? ' …' : ''}> ${c.text}`);
-      prev = c;
+    for (let mi = limitMi - 1; mi >= 0 && tail < cfg.tailTokens; mi--) {
+      const list = factStore.has(timeline[mi].key) ? factsOfMessage(mi).slice().reverse().map(f => ['f', f]) : msgChunkIds(mi).slice().reverse().map(id => ['c', chunks[id]]);
+      let stop = false;
+      for (const [t, u] of list) {
+        const k = t === 'f' ? factCost(u) : rawCost(u);
+        if (tail + k > cfg.tailTokens && tail > 0) { stop = true; break; }
+        if (t === 'f' ? addFact(u, 0) : addRaw(u, 0)) tail += k;
+      }
+      if (stop) break;
     }
+    for (const x of scored) addFact(x.f, x.lv);
+    // 같은 메시지의 이웃 문장 (맥락)
+    if (cfg.neighbor > 0) for (const x of scored.filter(y => y.lv >= 2)) {
+      const sib = factsOfMessage(x.f.mi);
+      const i = sib.indexOf(x.f);
+      for (let d = 1; d <= cfg.neighbor; d++) { addFact(sib[i - d], 0.5); addFact(sib[i + d], 0.5); }
+    }
+
+    const picked = [...units.values()].map(v => (v.f ? { t: 'f', mi: v.f.mi, pos: v.f.pos, si: v.f.si, u: v.f, pri: v.pri } : { t: 'c', mi: v.c.mi, pos: v.c.pos, si: -1, u: v.c, pri: v.pri }))
+      .sort((a, b) => a.mi - b.mi || a.pos - b.pos || a.si - b.si);
+    const asSent = cfg.memForm === 'sentence';
+    const lines = picked.map(p => (p.t === 'f' ? (asSent ? `#${p.mi + 1} ${p.u.sent}` : `#${p.mi + 1} ${p.u.line}`) : `<#${p.mi + 1} ${timeline[p.mi]?.role === 'user' ? 'user' : 'char'}> ${p.u.text}`));
+    const slotted = (!asSent && picked.some(p => p.t === 'f')) || head.some(l => /^(Open promise|Secret):/.test(l) && l.includes('/'));
     const note = cfg.note ? `${cfg.note}\n` : '';
-    const body = [headText, lines.length ? `${headText ? 'Excerpts:\n' : ''}${lines.join('\n')}` : ''].filter(Boolean).join('\n');
-    const block = body ? `[Memory]\n${note}${body}\n[/Memory]` : '';
+    const body = [slotted ? MEM_LEGEND : '', headText, lines.length ? `${headText ? 'Memories:\n' : ''}${lines.join('\n')}` : ''].filter(Boolean).join('\n');
+    const block = body && (headText || lines.length) ? `[Memory]\n${note}${body}\n[/Memory]` : '';
+    const why = (p) => (p.pri === 9 ? 'pin' : p.pri === 0 ? 'tail' : p.pri === 0.5 ? 'near' : 'pick');
     return {
       block, picked,
       trace: {
         cands: first.length, kept: scored.length, need, jevOk, present, hint, storyLines: sLines, storyKo: sLines.ko ?? [],
-        items: picked.map(c => ({ id: c.id, ck: ckOf(c), mi: c.mi, lv: Math.round((levels.get(c.id) ?? (take.get(c.id) === 9 ? 3 : 0)) * 100) / 100, why: take.get(c.id) === 9 ? 'pin' : take.get(c.id) === 0 ? 'tail' : take.get(c.id) === 0.5 ? 'near' : 'pick', text: c.text })),
-        levels: [...levels].map(([id, lv]) => ({ id, lv: Math.round(lv * 100) / 100, text: clip(chunks[id].text, 140), mi: chunks[id].mi + 1 })).sort((a, b) => b.lv - a.lv),
+        items: picked.map(p => ({ id: p.u.id, ck: `${timeline[p.mi]?.key ?? 'x'}:${p.pos}`, mi: p.mi, lv: Math.round((p.t === 'f' ? (levels.get(p.u.id) ?? (p.pri === 9 ? 3 : 0)) : (p.pri === 9 ? 3 : 0)) * 100) / 100, why: why(p), text: p.t === 'f' ? p.u.sent : p.u.text, fact: p.t === 'f' ? { k: p.u.k, slots: p.u.slots } : null })),
+        levels: [...levels].map(([id, lv]) => ({ id, lv: Math.round(lv * 100) / 100, text: clip(facts[id]?.sent ?? '', 140), mi: (facts[id]?.mi ?? 0) + 1 })).sort((a, b) => b.lv - a.lv),
       },
     };
   }
-
 
   // ══════════════════════════════════════════════════════════════════════
   //  이야기 층: 인물 · 관계 · 약속 · 이야기 시간 · 고정
@@ -1432,12 +1452,16 @@
 
   /** 답장 뒤 뒤에서: 새로 빠진 메시지를 몇 개씩 분석 */
   function queueStory() {
-    if (!settings.story || storyJob || !chatKey) return;
-    const todo = storyBacklog().slice(0, 8);
-    if (!todo.length) return;
+    if (storyJob || !chatKey) return;
+    const ftodo = factBacklog().slice(-8).reverse();             // 칸 줄은 최근 것부터 (지금 대화와 가까운 기억이 먼저)
+    const todo = settings.story ? storyBacklog().slice(0, 8) : []; // 이야기 정리는 순서대로 (관계 · 약속이 시간 순서라)
+    if (!ftodo.length && !todo.length) return;
     const key = chatKey;
     const tr = beginTrace('story');
-    storyJob = timed(tr, '이야기 분석', () => analyzeMessages(todo), `메시지 ${todo.length}개`)
+    storyJob = (async () => {
+      if (ftodo.length) await timed(tr, '칸 줄 만들기', () => factMessages(ftodo), `메시지 ${ftodo.length}개`);
+      if (todo.length && chatKey === key) await timed(tr, '이야기 분석', () => analyzeMessages(todo), `메시지 ${todo.length}개`);
+    })()
       .catch(error => setError('이야기 분석', error))
       .finally(() => { endTrace(tr); storyJob = null; if (chatKey === key) softRender(); });
   }
@@ -1449,17 +1473,21 @@
     const run = storyAll = (async () => {
       if (!await ensureChat()) throw new Error('채팅방을 먼저 열어 주세요.');
       while (storyJob) await storyJob.catch(() => {});
-      const todo = storyBacklog();
+      const ftodo = factBacklog().reverse();
+      const todo = settings.story ? storyBacklog() : [];
       const room = chatKey;
+      const total = ftodo.length + todo.length;
       const tr = beginTrace('story');
       let done = 0;
       try {
-        await timed(tr, '이야기 전체 분석', async () => {
-          for (let i = 0; i < todo.length && chatKey === room; i += 8) { await analyzeMessages(todo.slice(i, i + 8)); done = Math.min(todo.length, i + 8); onProgress?.(done, todo.length); }
-        }, () => `메시지 ${done}/${todo.length}개`);
+        await timed(tr, '전부 정리', async () => {
+          for (let i = 0; i < ftodo.length && chatKey === room; i += 8) { await factMessages(ftodo.slice(i, i + 8)); done = Math.min(ftodo.length, i + 8); onProgress?.(done, total); }
+          for (let i = 0; i < todo.length && chatKey === room; i += 8) { await analyzeMessages(todo.slice(i, i + 8)); done = ftodo.length + Math.min(todo.length, i + 8); onProgress?.(done, total); }
+        }, () => `${done}/${total}`);
       } finally { endTrace(tr); }
       await flushStory();
-      return todo.length;
+      await flushFacts();
+      return new Set([...ftodo, ...todo]).size;
     })().finally(() => { storyAll = null; });
     return run;
   }
@@ -1828,6 +1856,232 @@
     ] },
   };
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  칸 줄 기억: 문장마다 종류 + 누가/누구랑/누구에게/언제/어디서/무엇을/어떻게/왜
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // 원문을 그대로 넣는 대신, 문장을 원문 단어 그대로 칸에 나눠 담은 "칸 줄"을 기억으로 쓴다.
+  //  ① 규칙: 상태창 · 태그 빼기, 문장 나누기, 뻔한 단어는 규칙으로 칸 정하기 (이름+조사, 시간 말, ~에서, 끝말)
+  //  ② Jev 한 번: 문장 종류(사건 · 행동 · 사실 · 약속 · 비밀 · 건너뜀) + 애매한 단어의 칸
+  //     문장은 state에 번호로 한 번만, 질문은 "S3 w5 «단어»"처럼 짧게 (예전 방식보다 요청이 절반)
+  //  ③ 언제 · 어디서가 비면 그 메시지 시점의 상태창 값으로 채운다
+  //  ④ 칸 줄을 임베딩 (32바이트) → 회상 때 찾기 열쇠
+  // 원문은 Risu 채팅에 있으니 저장하지 않는다. 칸 줄은 기기 저장소에 메시지 지문별로.
+
+  const FACT_KINDS = { event: 'something happened (an event or change)', action: 'someone did something', fact: 'a fact, rule, setting, or state', promise: 'a promise or plan for later', secret: 'a secret someone keeps', skip: 'a question, small talk, filler narration, or nothing worth remembering' };
+  const TAG_KINDS = new Set(['event', 'action', 'promise', 'secret']);   // 칸 나누기는 이 종류만 (사실은 문장 그대로가 낫다)
+  const UPDATE_CUE = /바뀌|바꿨|변경|정정|이제는|지금은|현재|더 이상|대신|옮겼|옮긴|새로운|갱신|업데이트|최신/u;   // 바뀜 표시
+  const FACT_K = { event: 'E', action: 'A', fact: 'F', promise: 'P', secret: 'S' };
+  const FACT_KO = { event: '사건', action: '행동', fact: '사실', promise: '약속', secret: '비밀' };
+  const SLOT_ROLES = { who: 'who', with: 'with whom', whom: 'to/from whom', when: 'when', where: 'where', what: 'what', how: 'how', why: 'why', none: 'none' };
+  const MAX_FACT_SENTS = 24;   // 메시지 하나에서 칸 줄로 만들 문장 수
+  const FACT_PER_CALL = 40;    // Jev 한 번에 보여 줄 문장 수
+  let factStore = new Map();   // 메시지 지문 → [{ pos, si, k, s: [8칸], vec, p }]  (빈 배열 = 정리했지만 남길 게 없음)
+  let factDirty = new Set();
+  let factTimer = null;
+  let facts = [];              // 실행 중 목록: { id, mi, key, pos, si, k, slots, line, sent, vec, grams }
+  const factShardKey = (key, s) => `${KEY}${key}~f${s}`;
+
+  async function loadFacts(key) {
+    factStore = new Map();
+    factDirty = new Set();
+    if (!localStore) return;
+    const parts = await Promise.all(Array.from({ length: SHARDS }, (_, s) => Promise.resolve().then(() => localStore.getItem(factShardKey(key, s))).catch(() => null)));
+    for (const part of parts) if (part && typeof part === 'object') for (const [k, v] of Object.entries(part)) if (Array.isArray(v)) factStore.set(k, v);
+  }
+  function saveFacts() {
+    if (!localStore || factTimer) return;
+    factTimer = setTimeout(() => { factTimer = null; void flushFacts(); }, SAVE_DELAY);
+  }
+  function flushFacts() {
+    clearTimeout(factTimer);
+    factTimer = null;
+    if (!localStore || !chatKey || !factDirty.size) return saveChain;
+    const key = chatKey;
+    const data = [...factDirty].map(s => { const obj = {}; for (const [k, v] of factStore) if (shardOf(k) === s) obj[k] = v; return [s, obj]; });
+    factDirty = new Set();
+    saveChain = saveChain.catch(() => {}).then(async () => { for (const [s, obj] of data) await localStore.setItem(factShardKey(key, s), obj); }).catch(error => setError('칸 줄 저장', error));
+    return saveChain;
+  }
+  async function clearFacts() {
+    factStore = new Map();
+    factDirty = new Set(Array.from({ length: SHARDS }, (_, s) => s));
+    rebuildFacts();
+    await flushFacts();
+  }
+
+  /** 칸 줄: E/누가/누구랑/누구에게/언제/어디서/무엇을/어떻게/왜, 빈 칸은 X, 끝쪽 빈 칸은 생략 */
+  function factLine(k, slots) {
+    const s = slots.map(x => x || 'X');
+    while (s.length && s[s.length - 1] === 'X') s.pop();
+    return `${FACT_K[k] ?? 'F'}/${s.join('/')}`;
+  }
+  const factEmbedText = (f) => `${FACT_KO[f.k] ?? ''} ${(f.slots ?? f.s).filter(Boolean).join(' ')}`.trim();
+  function sentencesOfChunk(c) { return sentencesOf(stripStatus(c.text)).slice(0, MAX_FACT_SENTS); }
+
+  /** 저장된 칸 줄을 지금 채팅 순서에 맞게 펼친다 (조각을 다시 만들 때마다) */
+  function rebuildFacts() {
+    const prof = embedProfile();
+    facts = [];
+    for (let mi = 0; mi < timeline.length; mi++) {
+      const list = factStore.get(timeline[mi].key);
+      if (!list?.length) continue;
+      const ids = msgChunkIds(mi);
+      for (const f of list) {
+        const c = chunks[ids[f.pos]];
+        const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
+        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
+      }
+    }
+  }
+  const factsOfMessage = (mi) => facts.filter(f => f.mi === mi);
+  const factsOfChunk = (c) => facts.filter(f => f.mi === c.mi && f.pos === c.pos);
+  /** 아직 칸 줄을 안 만든 메시지 (Risu가 보낸 것은 빼고) */
+  function factBacklog() {
+    const upto = sentUpto();
+    const out = [];
+    for (let mi = 0; mi < upto; mi++) if (!factStore.has(timeline[mi].key)) out.push(mi);
+    return out;
+  }
+
+  // ── 규칙으로 정하는 칸 (Jev에게 안 묻는다) ──
+  const TIME_WORD = /^(오늘|내일|어제|모레|그저께|지금|방금|아까|아침|점심|저녁|밤|새벽|낮|오전|오후|어젯밤|오늘밤|그날|그때|다음|지난|이번|주말|평일|매일|곧|나중)|\d+\s*(시|분|초|일|월|년|주|살)|요일|^(봄|여름|가을|겨울)/u;
+  const END_WORD = /^(있었다|있다|있었어|했다|한다|였다|이었다|이다|됐다|되었다|같았다|것이다|거야|거든|있어|했어|해|요|다)[.!?…~"”']*$/u;
+  const LINK_WORD = /^(그리고|그러나|하지만|그래서|그런데|그러자|그러니까|사실|사실은|역시|아마|정말|진짜|그냥|그때|또|및|혹은|또는)$/u;
+  function ruleRole(w) {
+    const bare = w.replace(/[.,!?…~"“”'‘’()]/g, '');
+    if (!bare) return 'none';
+    if (LINK_WORD.test(bare) || END_WORD.test(w)) return 'none';
+    const hasName = peopleIn(bare).length > 0;
+    if (hasName) {
+      if (/(은|는|이|가|께서)$/.test(bare)) return 'who';
+      if (/(랑|이랑|와|과|하고)$/.test(bare)) return 'with';
+      if (/(에게|에게는|에게도|한테|한테는|께|을|를|몰래)$/.test(bare)) return 'whom';
+    }
+    if (TIME_WORD.test(bare)) return 'when';
+    if (/(에서|에서는|까지)$/.test(bare) && bare.length > 2) return 'where';
+    return null;
+  }
+  /** Jev가 "none"이라 해도 이름 · 숫자가 든 단어는 버리지 않는다 (기억에서 빠지면 안 되는 것) */
+  const mustKeep = (w) => /\d/.test(w) || peopleIn(w).length > 0;
+
+  /**
+   * 메시지 몇 개를 칸 줄로 만든다 (보낸 뒤 뒤에서). Jev 한 번에 문장 40개까지.
+   * 결과는 메시지 지문별로 저장. 남길 게 없는 메시지도 빈 배열로 남겨 다시 하지 않는다.
+   */
+  async function factMessages(mis) {
+    if (!mis.length) return 0;
+    const room = chatKey;
+    const keyOf = new Map(mis.map(mi => [mi, timeline[mi].key]));
+    const jobs = [];   // { mi, pos, si, s, words, roles(rule) }
+    for (const mi of mis) {
+      let n = 0;
+      msgChunkIds(mi).forEach((id, pos) => sentencesOfChunk(chunks[id]).forEach((s, si) => {
+        if (n >= MAX_FACT_SENTS) return;
+        const clean = unquote(s);
+        if (clean.replace(/[\s\p{P}]/gu, '').length < 4) return;   // "응.", "…" 같은 건 바로 건너뜀
+        if (/[?？]\s*$/u.test(clean)) return;                         // 질문은 기억이 아니다 (비슷한 질문이 후보 자리를 뺏는다)
+        const words = clean.split(/\s+/).filter(Boolean).slice(0, 24);
+        jobs.push({ mi, pos, si, s: clean, words, rule: words.map(ruleRole) });
+        n++;
+      }));
+    }
+    const made = new Map(mis.map(mi => [mi, []]));
+    for (let i = 0; i < jobs.length; i += FACT_PER_CALL) {
+      const part = jobs.slice(i, i + FACT_PER_CALL);
+      const state = part.map((j, n) => `S${n}: ${j.s}`).join('\n');
+      // ① 종류만
+      const q1 = {};
+      part.forEach((j, n) => { q1[`f${n}`] = { type: 'choice', instructions: `S${n}: what kind of sentence is it?`, criteria: FACT_KINDS }; });
+      let a = {};
+      try { a = await callJev(state, q1); } catch (error) { setError('기억 만들기', error); return 0; }
+      if (chatKey !== room) return 0;
+      part.forEach((j, n) => { j.kind = topChoice(a[`f${n}`])[0]; });
+      // ② 사건 · 행동 · 약속 · 비밀 문장만 단어 칸 (규칙으로 못 정한 단어만)
+      const q2 = {};
+      part.forEach((j, n) => { if (TAG_KINDS.has(j.kind)) j.words.forEach((w, k) => { if (j.rule[k] == null) q2[`g${n}_${k}`] = { type: 'choice', instructions: `S${n}, word ${k + 1} «${w}»: its role in S${n}?`, criteria: SLOT_ROLES }; }); });
+      if (Object.keys(q2).length) {
+        try { Object.assign(a, await callJev(state, q2)); } catch (error) { setError('칸 나누기', error); }
+        if (chatKey !== room) return 0;
+      }
+      part.forEach((j, n) => {
+        const kind = j.kind;
+        if (!FACT_K[kind]) return;   // 건너뜀
+        const slots = { who: [], with: [], whom: [], when: [], where: [], what: [], how: [], why: [] };
+        j.words.forEach((w, k) => {
+          let r = j.rule[k] ?? (TAG_KINDS.has(kind) ? topChoice(a[`g${n}_${k}`])[0] : null);
+          if (!slots[r]) r = mustKeep(w) ? 'what' : null;
+          if (r) slots[r].push(w.replace(/[.!?…]+$/u, ''));
+        });
+        const clock = storyClock(j.mi + 1);
+        if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
+        if (!slots.where.length && clock.place) slots.where.push(clock.place);
+        const s = ROLE_ORDER.map(r => slots[r].join(' '));
+        made.get(j.mi).push({ pos: j.pos, si: j.si, k: kind, s, ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), _sent: j.s });
+      });
+    }
+    // 칸 줄 임베딩 (찾기 열쇠)
+    const all = [...made.values()].flat();
+    if (all.length) {
+      try {
+        const vecs = await embedTexts(all.map(f => f._sent ?? factEmbedText(f)), `기억 임베딩 (${all.length}개)`);
+        if (chatKey !== room) return 0;
+        const prof = embedProfile();
+        all.forEach((f, i) => { f.vec = packSigns(toSigns(vecs[i])); f.p = prof; });
+        all.forEach(f => { delete f._sent; });
+      } catch (error) { setError('칸 줄 임베딩', error); }
+    }
+    for (const [mi, list] of made) { const k = keyOf.get(mi); factStore.set(k, list); factDirty.add(shardOf(k)); }
+    rebuildFacts();
+    saveFacts();
+    return mis.length;
+  }
+
+  // ── 찾기: 칸 줄 지문 + 글자 겹침을 RRF로 ──
+  function retrieveFacts(qvecs, query, exclude, k, limitMi) {
+    const pool = facts.filter(f => f.mi < limitMi && !exclude.has(f.id));
+    const sem = qvecs.length ? pool.filter(f => f.vec).map(f => { let s = -Infinity; qvecs.forEach((q, i) => { const v = simSigns(q, f.vec) * (i === 0 ? 1 : 0.85); if (v > s) s = v; }); return [f.id, s]; }).sort((a, b) => b[1] - a[1]) : [];
+    const qg = gramsOf(query);
+    const lex = pool.map(f => { let hit = 0; for (const g of qg) if (f.grams.has(g)) hit++; return [f.id, hit / Math.sqrt(1 + f.grams.size / 30)]; }).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]);
+    const rrf = new Map();
+    sem.slice(0, 100).forEach(([id], r) => rrf.set(id, (rrf.get(id) ?? 0) + 1 / (60 + r)));
+    lex.slice(0, 100).forEach(([id], r) => rrf.set(id, (rrf.get(id) ?? 0) + 1 / (60 + r)));
+    return [...rrf].sort((a, b) => b[1] - a[1]).slice(0, k).map(([id]) => facts[id]);
+  }
+  /**
+   * 책 단위로 꺼내기: 문장 점수로 비슷한 메시지(책)를 고르고, 그 책의 문장을 전부 후보로 (제목 줄 때문에 뽑혀도 정답 줄이 같이 Jev 앞에)
+   *  wantUpd: 질문이 "지금 · 현재 · 아직"을 물으면 바뀜 표시가 있는 책을 먼저
+   */
+  function retrieveBooks(qvecs, query, exclude, nMsg, cap, limitMi, wantUpd = false) {
+    const pool = facts.filter(f => f.mi < limitMi);
+    if (!pool.length) return [];
+    const sem = qvecs.length ? pool.filter(f => f.vec).map(f => { let s = -Infinity; qvecs.forEach((q, i) => { const v = simSigns(q, f.vec) * (i === 0 ? 1 : 0.85); if (v > s) s = v; }); return [f.id, s]; }).sort((a, b) => b[1] - a[1]) : [];
+    const qg = gramsOf(query);
+    const lex = pool.map(f => { let hit = 0; for (const g of qg) if (f.grams.has(g)) hit++; return [f.id, hit / Math.sqrt(1 + f.grams.size / 30)]; }).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]);
+    const fs = new Map();
+    sem.slice(0, 200).forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + 1 / (60 + r)));
+    lex.slice(0, 200).forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + 1 / (60 + r)));
+    const books = new Map();
+    for (const [id, sc] of fs) { const f = facts[id]; const b = books.get(f.mi) ?? { mi: f.mi, score: 0, upd: false }; b.score = Math.max(b.score, sc); books.set(f.mi, b); }
+    for (const b of books.values()) { b.upd = factsOfMessage(b.mi).some(f => f.upd); if (wantUpd && b.upd) b.score *= 1.3; }
+    const picked = [...books.values()].filter(b => !exclude.has(b.mi)).sort((a, b) => b.score - a.score).slice(0, nMsg);
+    const out = [];
+    for (const b of picked) {
+      const lines = factsOfMessage(b.mi);
+      const keep = lines.length <= 12 ? lines : lines.slice().sort((x, y) => (fs.get(y.id) ?? 0) - (fs.get(x.id) ?? 0)).slice(0, 12).sort((x, y) => x.id - y.id);
+      for (const f of keep) { if (out.length >= cap) break; out.push(f); }
+      if (out.length >= cap) break;
+    }
+    out.books = picked.map(b => b.mi);
+    return out;
+  }
+  async function searchFacts(query, k = 40) {
+    if (!query.trim() || !facts.length) return [];
+    let qv = [];
+    try { qv = await queryVecs([memText(query).slice(0, 2000)]); } catch { }
+    return retrieveFacts(qv, query, new Set(), k, timeline.length);
+  }
+
   function inject(messages, block) {
     const out = messages.map(m => ({ ...m }));
     let placed = false;
@@ -1858,18 +2112,7 @@
       lastWindowLen = entries.length;
       const head = timeline[timeline.length - entries.length]?.key ?? null;
       if (head !== windowHead) { windowHead = head; try { void Promise.resolve(localStore?.setItem(WINHEAD_KEY(chatKey), head)).catch(() => {}); } catch { } }
-      // 색인: Risu가 안 보낸 메시지 중 벡터가 없는 것. 많으면 최근 것부터 정해진 개수만 하고, 나머지는 다음에 (또는 도구 › 지금 전부 색인)
-      const upto = timeline.length - entries.length;
-      const todo = unindexed(upto);
-      if (todo.length && !job) {
-        const n = settings.indexPerSend;
-        const batch = todo.length <= n ? todo : todo.slice(-n);
-        if (todo.length > n && backlogWarned !== chatKey) {
-          backlogWarned = chatKey;
-          void Promise.resolve().then(() => R.alert?.(`JevArchive: 아직 색인 안 된 메시지가 ${todo.length}개예요.\n보낼 때마다 최근 것부터 ${n}개씩 색인할게요.\nJevArchive › 설정 › 도구 › "지금 전부 색인"으로 한 번에 할 수 있어요.`)).catch(() => {});
-        }
-        try { await timed(tr, '색인', () => indexMessages(batch), `메시지 ${batch.length}개${todo.length > batch.length ? ` · 남은 ${todo.length - batch.length}개` : ''}`); } catch (error) { setError('색인', error); }
-      }
+      // 기억(칸 줄)은 보낸 뒤 뒤에서 만든다. 여기서는 찾아 넣기만
       const r = await recall(entries, tr);
       const tokens = r.block ? estimateTokens(r.block) : 0;
       tr.note = `넣은 기억 ~${tokens}토큰`;
@@ -1930,10 +2173,12 @@
     let vecs = 0, bytes = 0;
     for (const v of vecStore.values()) { vecs += v.n; bytes += v.b64.reduce((a, s) => a + s.length, 0) + 40; }
     const upto = sentUpto();
-    let cardN = 0;
-    for (const v of cardStore.values()) { cardN += v.length; bytes += v.reduce((a, cd) => a + (cd.vec?.length ?? 0) + (cd.what?.length ?? 0) * 2 + 40, 0); }
+    let factN = 0;
+    for (const v of factStore.values()) { factN += v.length; bytes += v.reduce((a, f) => a + (f.vec?.length ?? 0) + f.s.join('').length * 2 + 24, 0); }
     const people = personList().filter(p => !p.hidden && p.count > 0).length;
-    return { messages: timeline.length, chunks: chunks.length, indexedMsgs: upto - unindexed(upto).length, sendable: upto, vecs, kb: Math.round(bytes / 1024), people, threads: openThreads().length, secrets: openSecrets().length, cards: cardN, storyLeft: settings.story ? storyBacklog().length : 0 };
+    const fb = factBacklog();
+    const left = new Set([...fb, ...(settings.story ? storyBacklog() : [])]).size;
+    return { messages: timeline.length, chunks: chunks.length, indexedMsgs: upto - fb.length, sendable: upto, vecs: factN, facts: factN, kb: Math.round(bytes / 1024), people, threads: openThreads().length, secrets: openSecrets().length, cards: factN, storyLeft: left };
   }
 
 
@@ -2037,6 +2282,8 @@ a{color:var(--ac)}
 .slots{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
 .slot{display:inline-flex;align-items:baseline;gap:5px;padding:3px 8px;border-radius:8px;background:var(--s2);border:1px solid var(--line);font-size:12.5px;color:var(--tx);font-weight:500}
 .slot i{font-style:normal;font-size:10.5px;font-weight:700;color:var(--tx3)}
+.slot.kind{font-size:11px;font-weight:800;padding:3px 7px;border-color:transparent}.slot.k-event{background:rgba(244,184,96,.16);color:#ffd9a0}.slot.k-action{background:rgba(140,158,255,.16);color:#c8d0ff}.slot.k-fact{background:rgba(76,208,160,.14);color:#a8f0d6}.slot.k-promise{background:rgba(244,184,96,.16);color:#ffd9a0}.slot.k-secret{background:rgba(180,140,255,.16);color:#dccbff}
+.mem .slots{margin-top:2px}
 .slot.r-who i{color:#8c9eff}.slot.r-whom i{color:#ff86b0}.slot.r-with i{color:#ffb38a}.slot.r-when i{color:#f4b860}.slot.r-where i{color:#4cd0a0}.slot.r-what i{color:#c6cbe0}.slot.r-how i{color:#6cb4ff}.slot.r-why i{color:#dccbff}
 .chip.sec{background:rgba(180,140,255,.12);border-color:rgba(180,140,255,.35);color:#dccbff}
 .spoil{filter:blur(6px);cursor:pointer;transition:filter .2s ease;border-radius:6px;user-select:none}
@@ -2333,9 +2580,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     if (needsSetup()) out.push({ tone: 'bad', ic: 'alert', t: 'Jev 연결이 필요해요', d: '키 하나만 넣으면 바로 기억하기 시작해요.', act: 'onboard', label: '연결하기' });
     else if (!settings.enabled) out.push({ tone: 'warn', ic: 'alert', t: 'JevArchive가 꺼져 있어요', d: '요청을 건드리지 않아요.', act: 'toggle-enabled', label: '켜기' });
     if (!needsSetup() && stats.lastError && Date.now() - stats.lastErrorAt < 10 * 60 * 1000) out.push({ tone: 'bad', ic: 'alert', t: '최근 오류', d: `${timeAgo(stats.lastErrorAt)} · ${stats.lastError} · 그래도 보내기는 멈추지 않아요.`, act: 'go-settings', label: '연결 확인' });
-    const left = st.sendable - st.indexedMsgs;
-    if (!needsSetup() && left > 0) out.push({ tone: 'warn', ic: 'db', t: `색인 안 된 이전 메시지 ${left}개`, d: `보낼 때마다 최근 것부터 ${settings.indexPerSend}개씩 해요. 한 번에 하려면 눌러 주세요 (임베딩만, Jev 없음).`, act: 'index-all', label: processing ? '색인 중…' : '지금 색인', busy: !!processing });
-    if (!needsSetup() && settings.story && st.storyLeft > 0 && left === 0) out.push({ tone: 'ac', ic: 'people', t: `이야기 정리 안 된 메시지 ${st.storyLeft}개`, d: '인물 · 관계 · 약속 · 사건 카드를 만들어요. 보낼 때마다 뒤에서 조금씩 자동으로 하고, 한 번에 하려면 눌러 주세요.', act: 'story-all', label: storyAll ? '정리 중…' : '지금 정리', busy: !!storyAll });
+    if (!needsSetup() && st.storyLeft > 0) out.push({ tone: st.storyLeft > 8 ? 'warn' : 'ac', ic: 'db', t: `기억으로 정리 안 된 이전 메시지 ${st.storyLeft}개`, d: '보낼 때마다 뒤에서 8개씩 자동으로 칸 줄 기억 · 인물 · 관계 · 약속을 만들어요. 한 번에 하려면 눌러 주세요.', act: 'story-all', label: storyAll ? '정리 중…' : '지금 정리', busy: !!storyAll });
     return out;
   }
   const alertHtml = (a) => `<div class="alert ${a.tone}"><span class="ic">${icon(a.ic)}</span><div class="t"><b>${escapeHtml(a.t)}</b><div class="d">${escapeHtml(a.d)}</div></div><button class="btn ${a.tone === 'bad' ? 'p' : ''}" data-act="${a.act}"${a.busy ? ' disabled' : ''}>${escapeHtml(a.label)}</button></div>`;
@@ -2349,11 +2594,11 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const items = lr?.items ?? [];
     const film = items.length ? `<div class="film" data-x="film">${items.map(it => `<button class="mem" data-act="chunk" data-ck="${escapeHtml(it.ck)}">
         <div class="hd">#${it.mi + 1} ${it.why === 'pin' ? '<span class="tag pin">고정</span>' : it.why === 'tail' ? '<span class="tag tail">방금 흐름</span>' : it.why === 'near' ? '<span class="tag">앞뒤</span>' : ''}<span class="meter"><i style="width:${Math.round(Math.min(3, it.lv) / 3 * 100)}%"></i></span></div>
-        <div class="txt">${escapeHtml(it.text)}</div></button>`).join('')}</div>`
+        ${it.fact ? factChips(it.fact.k, it.fact.slots, it.text) : `<div class="txt">${escapeHtml(it.text)}</div>`}</button>`).join('')}</div>`
       : `<div class="empty"><div class="big">🎞️</div><b>아직 넣은 기억이 없어요</b>메시지를 보내면 이번 답장에 들어간 기억이 여기에 카드로 보여요.</div>`;
     const open = openThreads().slice(-3).reverse();
     const recent = [];
-    for (let mi = timeline.length - 1; mi >= 0 && recent.length < 6; mi--) for (const cd of cardsOfMessage(mi).reverse()) if (cd.who !== 'none' && recent.length < 6) recent.push(cd);
+    for (let i = facts.length - 1; i >= 0 && recent.length < 6; i--) if (facts[i].k === 'event' || facts[i].k === 'action') recent.push(facts[i]);
     const hint = story.director;
     return `<section class="hero">
         <div class="eyebrow">지금 장면</div>
@@ -2381,8 +2626,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
           ${settings.director ? directorBox(hint) : ''}
         </section>
       </div>
-      ${recent.length ? `<section class="card"><div class="ch"><h2>최근 일어난 일</h2><span class="sp"></span><span class="meta">사건 카드</span></div><div class="list">${recent.map(cd => `<button class="item" data-act="chunk" data-ck="${escapeHtml(`${timeline[cd.mi].key}:${cd.pos}`)}">${avatar(cd.who, 'sm')}<div class="t"><b>${escapeHtml(cardText(cd))}</b><span>#${cd.mi + 1}</span></div></button>`).join('')}</div></section>` : ''}
-      <div class="kpis">${kpiBox(st.messages, '채팅 메시지')}${kpiBox(`${st.indexedMsgs}<span class="dim" style="font-size:14px">/${st.sendable}</span>`, '색인된 이전 메시지')}${kpiBox(st.people, '인물')}${kpiBox(`${st.kb}KB`, '이 기기에 저장')}</div>`;
+      ${recent.length ? `<section class="card"><div class="ch"><h2>최근 일어난 일</h2><span class="sp"></span><span class="meta">칸 줄 기억</span></div><div class="list">${recent.map(f => factItem(f)).join('')}</div></section>` : ''}
+      <div class="kpis">${kpiBox(st.messages, '채팅 메시지')}${kpiBox(st.facts ?? 0, '칸 줄 기억')}${kpiBox(st.people, '인물')}${kpiBox(`${st.kb}KB`, '이 기기에 저장')}</div>`;
   }
 
   function directorBox(hint) {
@@ -2393,6 +2638,16 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       ${settings.dirCards ? `<div class="row" style="margin-top:10px"><button class="btn sm g" data-act="dircards">${icon('film', 16)} 연출 카드 ${n}장</button></div>` : ''}`;
   }
 
+  /** 칸 줄을 칩으로: [사건] 누가 하윤이 · 언제 … */
+  function factChips(k, slots, sent) {
+    const kind = k && FACT_KO[k] ? `<span class="slot kind k-${k}">${FACT_KO[k]}</span>` : '';
+    if (!TAG_KINDS.has(k) || !slots.some(Boolean)) return `<div class="slots">${kind}<span class="slot">${escapeHtml(sent ?? slots.filter(Boolean).join(' '))}</span></div>`;
+    return `<div class="slots">${kind}${ROLE_ORDER.map((r, i) => (slots[i] ? `<span class="slot r-${r}"><i>${ROLE_KO[r]}</i>${escapeHtml(slots[i])}</span>` : '')).join('')}</div>`;
+  }
+  function factItem(f, q = '') {
+    const ck = `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`;
+    return `<button class="item" data-act="chunk" data-ck="${escapeHtml(ck)}" style="align-items:flex-start"><div class="t"><div class="row xs dim" style="margin-bottom:2px">#${f.mi + 1} · ${timeline[f.mi]?.role === 'user' ? '나' : escapeHtml(characterCache.name || '캐릭터')}${story.pins.includes(ck) ? ' <span class="tag pin">고정</span>' : ''}</div>${factChips(f.k, f.slots, f.sent)}${q ? `<div class="snip xs dim" style="margin-top:4px">${highlight(f.sent, q)}</div>` : ''}</div></button>`;
+  }
   function promiseHtml(t) {
     const done = t.status !== 'open', sec = isSecret(t);
     const L = sec ? { done: '드러남', dropped: '비밀 아님', open: '다시 숨기기' } : { done: '지켜짐', dropped: '취소됨', open: '다시 열기' };
@@ -2576,10 +2831,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       const pins = story.pins.map(chunkByCk).filter(Boolean);
       body = pins.length ? pins.map(c => chunkCard(c)).join('') : '<div class="empty"><div class="big">📌</div><b>고정한 기억이 없어요</b>기억을 눌러 📌 고정하면 매번 답장에 넣어요.</div>';
     } else if (s.q.trim()) {
-      body = s.busy ? '<div class="empty">찾는 중…</div>' : (s.results?.length ? s.results.map(c => chunkCard(c, s.q)).join('') : '<div class="empty"><b>찾은 게 없어요</b>다른 말로 찾아보세요.</div>');
+      body = s.busy ? '<div class="empty">찾는 중…</div>' : (s.results?.length ? s.results.map(f => factItem(f, s.q)).join('') : '<div class="empty"><b>찾은 게 없어요</b>다른 말로 찾아보세요.</div>');
     } else {
-      const recent = chunks.slice(-24).reverse();
-      body = recent.length ? `<div class="sec" style="margin-top:4px">최근 대화</div>${recent.map(c => chunkCard(c)).join('')}` : '<div class="empty"><div class="big">🗂️</div><b>아직 기억이 없어요</b>대화를 이어 가면 여기에 쌓여요.</div>';
+      const recent = facts.slice(-30).reverse();
+      body = recent.length ? `<div class="sec" style="margin-top:4px">최근 기억 (칸 줄)</div>${recent.map(f => factItem(f)).join('')}` : '<div class="empty"><div class="big">🗂️</div><b>아직 기억이 없어요</b>대화를 이어 가면 보낼 때마다 뒤에서 칸 줄 기억으로 정리돼요.</div>';
     }
     return `<form class="search" data-act="search-form" onsubmit="return false">${icon('search', 18)}<input id="mq" placeholder="무엇을 찾을까요? (예: 바다 약속, 하윤 비밀)" value="${escapeHtml(s.q)}" autocomplete="off" enterkeyhint="search"><button class="btn sm p" data-act="search">찾기</button></form>
       <div class="seg"><button class="${!s.pins ? 'on' : ''}" data-act="mtab" data-v="all">전체</button><button class="${s.pins ? 'on' : ''}" data-act="mtab" data-v="pins">📌 고정 ${story.pins.length}</button></div>
@@ -2627,7 +2882,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const rels = pairsOf(name).sort((a, b) => b.co - a.co);
     const th = story.threads.filter(t => t.who === name || t.to === name).slice().reverse().slice(0, 6);
     const acts = [];
-    for (let mi = timeline.length - 1; mi >= 0 && acts.length < 8; mi--) for (const cd of cardsOfMessage(mi)) if ((cd.who === name || cd.to === name) && acts.length < 8) acts.push(cd);
+    const forms = nameForms(story.people[name] ?? { name, aliases: [] });
+    for (let i = facts.length - 1; i >= 0 && acts.length < 8; i--) if ([0, 1, 2].some(j => forms.some(n => facts[i].slots[j]?.includes(n)))) acts.push(facts[i]);
     const others = personList().filter(x => x.name !== name && !x.hidden);
     return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${escapeHtml(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="hint">${p.aliases.map(a => `<span class="chip">${escapeHtml(a)}</span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
       <div class="sec">관계</div>
@@ -2636,7 +2892,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
           ${settings.intim || r.intim?.n ? `<div class="row" style="gap:6px;margin-top:6px"><span class="xs dim">관계 횟수</span><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="관계 횟수 −1">${icon('minus', 14)}</button><b class="small" style="min-width:18px;text-align:center">${r.intim?.n ?? 0}</b><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="관계 횟수 +1">${icon('plus', 14)}</button>${r.intim?.firstCk ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.firstCk)}">처음 #${r.intim.first + 1}</button>` : ''}${r.intim?.lastCk && r.intim.n > 1 ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.lastCk)}">최근 #${r.intim.last + 1}</button>` : ''}</div>` : ''}
           ${r.events.length ? `<div class="xs dim" style="margin-top:4px">${r.events.slice(-4).reverse().map(ev => `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(ev.ck)}">${ev.d > 0 ? '💗' : '💧'} #${ev.mi + 1}</button>`).join('')}</div>` : ''}</div></div>`; }).join('') : '<div class="small dim">아직 함께 나온 인물이 없어요.</div>'}
       ${th.length ? `<div class="sec">약속 · 비밀</div><div class="col">${th.map(promiseHtml).join('')}</div>` : ''}
-      ${acts.length ? `<div class="sec">한 일 · 겪은 일</div><div class="list">${acts.map(cd => `<button class="item" data-act="chunk" data-ck="${escapeHtml(`${timeline[cd.mi].key}:${cd.pos}`)}"><div class="t"><b style="white-space:normal">${escapeHtml(cardText(cd))}</b><span>#${cd.mi + 1}</span></div></button>`).join('')}</div>` : ''}
+      ${acts.length ? `<div class="sec">한 일 · 겪은 일</div><div class="list">${acts.map(f => factItem(f)).join('')}</div>` : ''}
       <div class="sec">고치기</div>
       <div class="col">
         <div class="row"><input class="inp" id="alias-in" placeholder="다른 이름(별명) 추가" style="flex:1;min-width:140px"><button class="btn" data-act="alias" data-name="${escapeHtml(name)}">추가</button></div>
@@ -2649,7 +2905,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     if (!c) return `<div class="sh"><div class="t"><h3>기억</h3></div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div><div class="empty">이 대화는 지금 채팅에 없어요 (지웠거나 고쳤어요).</div>`;
     const pinned = story.pins.includes(ck);
     const prev = chunks[c.id - 1], next = chunks[c.id + 1];
-    const cards = cardsOfMessage(c.mi).filter(cd => cd.pos === c.pos);
+    const fl = factsOfChunk(c);
     const names = settings.story ? peopleIn(c.text) : [];
     const clock = parseStatus(timeline[c.mi]?.text ?? '');
     return `<div class="sh"><div class="t"><h3>#${c.mi + 1} · ${timeline[c.mi]?.role === 'user' ? '나' : escapeHtml(characterCache.name || '캐릭터')}</h3><div class="small muted">${escapeHtml(clockLabel(clock) || `${c.pos + 1}번째 조각`)}</div></div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
@@ -2657,7 +2913,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       ${prev && prev.mi === c.mi ? `<div class="snip dim small" style="margin-bottom:8px">… ${escapeHtml(clip(prev.text, 160))}</div>` : ''}
       <div class="snip" style="color:var(--tx);font-size:15px">${escapeHtml(c.text)}</div>
       ${next && next.mi === c.mi ? `<div class="snip dim small" style="margin-top:8px">${escapeHtml(clip(next.text, 160))} …</div>` : ''}
-      ${cards.length ? `<div class="sec">사건 카드</div><div class="col">${cards.map(cd => `<span class="chip ac" style="white-space:normal">${escapeHtml(cardText(cd))}</span>`).join('')}</div>` : ''}
+      <div class="sec">이 부분의 칸 줄 기억</div>${fl.length ? `<div class="col">${fl.map(f => factChips(f.k, f.slots, f.sent)).join('')}</div>` : `<div class="small dim">${factStore.has(timeline[c.mi]?.key) ? '남길 만한 문장이 없었어요.' : '아직 정리 전이에요. 보낼 때 뒤에서 만들어요.'}</div>`}
       <div class="row" style="margin-top:18px"><button class="btn ${pinned ? '' : 'p'} block" data-act="pin" data-ck="${escapeHtml(ck)}">${icon('pin', 18)}${pinned ? '고정 풀기' : '고정 — 매번 답장에 넣기'}</button></div>`;
   }
 
@@ -2746,14 +3002,12 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         <details class="more"${keepOpen('adv-mem', cur === 'custom')}><summary>직접 조절</summary>
           <div class="field inline"><div><label>기억 예산 (토큰)</label><div class="help">한 번에 넣는 기억의 최대 크기. 0이면 안 넣어요.</div></div>${num('budget', 0, 20000)}</div>
           <div class="field inline"><div><label>Jev 후보 수</label><div class="help">많으면 덜 놓치지만 Jev 비용이 늘어요.</div></div>${num('candidates', 4, 80)}</div>
-          <div class="field inline"><div><label>앞뒤 조각</label><div class="help">고른 조각의 앞뒤를 몇 개씩 같이 넣을지.</div></div>${num('neighbor', 0, 3)}</div>
-          <div class="field inline"><div><label>최근 흐름 (토큰)</label><div class="help">Risu가 막 안 보낸 대화 끝부분을 늘 이만큼.</div></div>${num('tailTokens', 0, 2000)}</div>
-          <div class="field inline"><div><label>보낼 때 색인 개수</label><div class="help">밀린 게 이보다 많으면 최근 것부터 이만큼씩.</div></div>${num('indexPerSend', 1, 5000)}</div>
+          <div class="field inline"><div><label>이웃 칸 줄</label><div class="help">고른 기억과 같은 메시지의 앞뒤 문장을 몇 개씩 같이 넣을지.</div></div>${num('neighbor', 0, 3)}</div>
+          <div class="field inline"><div><label>방금 흐름 (토큰)</label><div class="help">Risu가 막 안 보낸 대화 끝부분을 늘 이만큼. 아직 칸 줄이 없으면 원문으로.</div></div>${num('tailTokens', 0, 2000)}</div>
         </details>
       </section>
       <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">뒤에서 정리 · 보내기는 안 느려져요</span></div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
-        <div class="field inline"><div><label>사건 카드</label><div class="help">"누가 → 누구에게: 무엇을" 카드를 만들어 인물 페이지에 보여 주고, 기억을 찾는 열쇠로도 써요. 넣는 건 여전히 원문이에요. Jev 질문이 꽤 늘어요(그래도 싸요).</div></div>${sw('cards', d.cards)}</div>
         <div class="field inline"><div><label>관계 횟수 (성인)</label><div class="help">두 사람이 실제로 관계를 가진 횟수를 세요. 회상 · 꿈 · 계획 · 농담은 안 세고, 같은 장면은 한 번만. 인물 페이지에서 고칠 수 있고, 둘이 같이 나올 때만 짧게 넣어요. 이야기 정리에 질문 하나만 더해요.</div></div>${sw('intim', d.intim)}</div>
         <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 분위기 · 꺼낼 약속을 짧게 귀띔해요. 회상과 같은 Jev 호출이라 호출 수는 안 늘어요. 이야기를 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div>
         ${d.director ? `<div class="subbox">
@@ -2776,11 +3030,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <section class="card"><div class="ch"><h2>도구</h2></div>
         ${ui.progress ? `<div class="small" style="margin-bottom:10px">${escapeHtml(ui.progress)}<div class="progress"><i style="width:${ui.progressPct ?? 30}%"></i></div></div>` : ''}
         <div class="list">
-          ${[['index-all', '지금 전부 색인', `이전 메시지 ${st.sendable}개 중 ${st.indexedMsgs}개 색인됨. 임베딩만, Jev 없음.`, processing ? '색인 중…' : '색인', !!processing],
-             ['story-all', '이야기 전체 정리', `정리 안 된 메시지 ${st.storyLeft}개. 인물 · 관계 · 약속 · 카드를 만들어요.`, storyAll ? '정리 중…' : '정리', !!storyAll || !settings.story],
+          ${[['story-all', '지금 전부 정리', `정리 안 된 이전 메시지 ${st.storyLeft}개. 칸 줄 기억 · 인물 · 관계 · 약속을 만들어요 (Jev).`, storyAll ? '정리 중…' : '정리', !!storyAll],
              ['reread', '채팅 다시 읽기', '메시지를 고치거나 지웠는데 반영이 안 된 것 같을 때.', '다시 읽기', false]].map(([act, t, dsc, label, dis]) => `<div class="item"><div class="t"><b>${t}</b><span>${dsc}</span></div><button class="btn sm" data-act="${act}"${dis ? ' disabled' : ''}>${label}</button></div>`).join('')}
-          <div class="item"><div class="t"><b>이야기 기록 초기화</b><span>인물 · 관계 · 약속 · 카드를 지워요. 고정과 원문 색인은 그대로.</span></div><button class="btn sm d" data-act="story-reset">초기화</button></div>
-          <div class="item"><div class="t"><b>이 기기 색인 지우기</b><span>벡터만 지워요. 원문은 Risu 채팅에 그대로고 다시 색인돼요.</span></div><button class="btn sm d" data-act="clear">지우기</button></div>
+          <div class="item"><div class="t"><b>이야기 기록 초기화</b><span>인물 · 관계 · 약속 · 비밀을 지워요. 칸 줄 기억과 고정은 그대로.</span></div><button class="btn sm d" data-act="story-reset">초기화</button></div>
+          <div class="item"><div class="t"><b>칸 줄 기억 지우기</b><span>이 채팅의 칸 줄 기억을 이 기기에서 지워요. 원문은 Risu 채팅에 그대로고, 다시 정리하면 돼요.</span></div><button class="btn sm d" data-act="clear">지우기</button></div>
         </div>
       </section>
       <section class="card"><details class="more" style="border:0;margin:0;padding:0"${keepOpen('diag', false)}><summary><b style="color:var(--tx)">진단</b><span class="dim xs" style="margin-left:6px">단계별 걸린 시간</span></summary>
@@ -2906,7 +3159,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     ui.search.busy = true;
     ui.search.pins = false;
     render();
-    try { ui.search.results = await searchMemory(q); } catch (error) { toast(String(error?.message ?? error)); ui.search.results = []; }
+    try { ui.search.results = await searchFacts(q); } catch (error) { toast(String(error?.message ?? error)); ui.search.results = []; }
     ui.search.busy = false;
     render();
     const el = document.getElementById('mq');
@@ -3105,8 +3358,9 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         toast('초기화했어요. 다시 정리하려면 "이야기 전체 정리"를 누르세요.');
         return;
       case 'clear':
-        if (!await confirmDialog('이 채팅의 벡터를 이 기기에서 지울까요?\n원문은 그대로고, 다음에 다시 색인돼요.', '지우기', true)) return;
+        if (!await confirmDialog('이 채팅의 칸 줄 기억을 이 기기에서 지울까요?\n원문은 그대로고, 다시 정리하면 돼요.', '지우기', true)) return;
         await clearVectors();
+        await clearFacts();
         render();
         toast('지웠어요.');
         return;
@@ -3139,11 +3393,11 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
         R.removeRisuReplacer('beforeRequest', beforeRequestHandler),
         R.removeRisuReplacer('afterRequest', afterRequestHandler),
         buttonPartId && R.unregisterUIPart ? R.unregisterUIPart(buttonPartId) : null,
-        flushVectors(), flushStory(), flushCards(),
+        flushVectors(), flushStory(), flushCards(), flushFacts(),
       ]);
     });
   }
-  try { globalThis.addEventListener?.('pagehide', () => { void flushVectors(); void flushStory(); void flushCards(); }); } catch { }
+  try { globalThis.addEventListener?.('pagehide', () => { void flushVectors(); void flushStory(); void flushCards(); void flushFacts(); }); } catch { }
   await syncButton();
   try { await ensureChat(); } catch { }
   console.log(LOG, '준비 완료');
@@ -3151,9 +3405,9 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   if (globalThis.__JEVARCHIVE_TEST__) {
     globalThis.__JEVARCHIVE_TEST__.x = {
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
-      chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory,
+      chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
