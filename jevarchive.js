@@ -859,8 +859,8 @@
       rel.push({ p, w: (p.type ? 3 : 0) + Math.abs(p.aff) + Math.log2(1 + p.co) + (im ? 2 : 0) });
     }
     rel.sort((a, b) => b.w - a.w).slice(0, 4).forEach(({ p }) => {
-      out.push(`${p.a} ↔ ${p.b}: ${[p.type ? REL_DESC[p.type] : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`, settings.intim && p.intim?.n ? `intimate ×${p.intim.n}` : null].filter(Boolean).join(', ')}`);
-      out.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? REL_TYPES[p.type] : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`, settings.intim && p.intim?.n ? `관계 ${p.intim.n}번` : null].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
+      out.push(`${p.a} ↔ ${p.b}: ${[p.type ? relEn(p) : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`, settings.intim && p.intim?.n ? `intimate ×${p.intim.n}` : null].filter(Boolean).join(', ')}`);
+      out.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? relKo(p) : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`, settings.intim && p.intim?.n ? `관계 ${p.intim.n}번` : null].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
     });
     const th = openThreads().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-3);
     for (const t of th) {
@@ -1138,8 +1138,41 @@
   }
 
   // ── 관계 ──
-  const REL_TYPES = { friends: '친구', lovers: '연인', family: '가족', rivals: '라이벌', enemies: '적', colleagues: '동료', mentor: '스승·제자', master_servant: '주종', acquaintances: '아는 사이' };
-  const REL_DESC = { friends: 'friends', lovers: 'lovers or romantic partners', family: 'family or relatives', rivals: 'rivals', enemies: 'enemies', colleagues: 'colleagues or teammates', mentor: 'mentor and student', master_servant: 'master and servant, or boss and subordinate', acquaintances: 'acquaintances, not close' };
+  // 관계 종류: [한국어, Jev 설명, 방향 있으면 [앞쪽 이름, 영어 문장]]
+  const REL_DEF = {
+    crush: ['짝사랑', 'one-sided crush: one loves the other, who does not return it', ['짝사랑', (x, y) => `${x} has a one-sided crush on ${y}`]],
+    some: ['썸', 'mutual attraction or flirting, not officially dating'],
+    lovers: ['연인', 'lovers or romantic partners'],
+    married: ['부부', 'married couple'],
+    ex: ['전 연인', 'former lovers who broke up'],
+    fwb: ['섹스 파트너', 'sexual partners without being a couple (friends with benefits)'],
+    affair: ['불륜', 'secret affair (one or both is cheating on someone)'],
+    childhood: ['소꿉친구', 'childhood friends'],
+    bestfriends: ['절친', 'best friends'],
+    friends: ['친구', 'friends'],
+    acquaintances: ['아는 사이', 'acquaintances, not close'],
+    strangers: ['처음 본 사이', 'strangers who just met'],
+    parent: ['부모·자식', 'parent and child', ['부모', (x, y) => `${x} is ${y}'s parent`]],
+    siblings: ['형제자매', 'siblings'],
+    family: ['가족·친척', 'other family or relatives'],
+    master_servant: ['주인·하인', 'master and servant, owner and slave or pet', ['주인', (x, y) => `${x} is ${y}'s master`]],
+    boss: ['상사·부하', 'boss and subordinate, employer and employee', ['상사', (x, y) => `${x} is ${y}'s boss`]],
+    mentor: ['스승·제자', 'teacher and student, mentor and apprentice', ['스승', (x, y) => `${x} is ${y}'s teacher`]],
+    senior: ['선배·후배', 'senior and junior (school, club, or work)', ['선배', (x, y) => `${x} is ${y}'s senior`]],
+    guardian: ['보호자·피보호자', 'guardian and the one they protect or look after', ['보호자', (x, y) => `${x} is ${y}'s guardian`]],
+    colleagues: ['동료', 'colleagues, teammates, or work partners'],
+    rivals: ['라이벌', 'rivals'],
+    enemies: ['적', 'enemies'],
+    obsession: ['집착', 'one is obsessed with or stalks the other', ['집착', (x, y) => `${x} is obsessed with ${y}`]],
+  };
+  const REL_GROUPS = [['연애', ['crush', 'some', 'lovers', 'married', 'ex', 'fwb', 'affair']], ['친구', ['childhood', 'bestfriends', 'friends', 'acquaintances', 'strangers']], ['가족', ['parent', 'siblings', 'family']], ['위아래', ['master_servant', 'boss', 'mentor', 'senior', 'guardian']], ['일', ['colleagues']], ['적대', ['rivals', 'enemies', 'obsession']]];
+  const REL_TYPES = Object.fromEntries(Object.entries(REL_DEF).map(([k, v]) => [k, v[0]]));
+  const REL_DESC = Object.fromEntries(Object.entries(REL_DEF).map(([k, v]) => [k, v[1]]));
+  const relDir = (t) => REL_DEF[t]?.[2] ?? null;
+  /** 모델에게 보낼 관계 (방향 있으면 누가 어느 쪽인지까지) */
+  function relEn(p) { const d = relDir(p.type); return d && p.who ? d[1](p.who, p.who === p.a ? p.b : p.a) : REL_DESC[p.type]; }
+  /** 화면용: "주인·하인 · 하윤이 주인" */
+  function relKo(p) { const d = relDir(p.type); return d && p.who ? `${REL_TYPES[p.type]} · ${p.who}${hasBatchim(p.who) ? '이' : '가'} ${d[0]}` : (REL_TYPES[p.type] ?? ''); }
   function pairOf(a, b, create = false) {
     const k = pairKey(a, b);
     if (!story.pairs[k] && create) story.pairs[k] = { a: a < b ? a : b, b: a < b ? b : a, co: 0, aff: 0, type: null, last: null, events: [] };
@@ -1294,7 +1327,7 @@
         const pr = pairOf(names[i], names[j], true);
         pr.co++;
         pr.last = Math.max(pr.last ?? 0, c.mi);
-        if (pairJobs.length < 8) pairJobs.push({ pr, c, askType: !pr.type && (pr.co === 2 || pr.co % 10 === 0) });
+        if (pairJobs.length < 8) pairJobs.push({ pr, c, askType: !pr.lock && (!pr.type ? pr.co === 2 || pr.co % 10 === 0 : pr.co % 15 === 0), askWho: !pr.lock && !!relDir(pr.type) && !pr.who });
       }
       // 약속한 사람 후보에는 글쓴이도 (예: 내가 쓴 "약속할게."는 내 약속)
       const author = timeline[c.mi]?.role === 'user' ? personaCache : characterCache.name;
@@ -1320,6 +1353,7 @@
     pairJobs.forEach((j, i) => {
       q[`a${i}`] = { type: 'choice', instructions: `In this passage, how do ${j.pr.a} and ${j.pr.b} treat each other? «${clip(j.c.text, 700)}»`, criteria: { closer: 'they grow closer, warmer, or more trusting', apart: 'tension, conflict, coldness, or distrust', none: 'no clear change or they do not really interact' } };
       if (j.askType) q[`y${i}`] = { type: 'choice', instructions: `What is the relationship between ${j.pr.a} and ${j.pr.b} in this story?`, criteria: REL_DESC };
+      if (j.askType || j.askWho) q[`yw${i}`] = { type: 'choice', instructions: `Between ${j.pr.a} and ${j.pr.b}, who is on the leading side: the one with the crush or obsession, or the parent, master, boss, teacher, senior, or guardian?`, criteria: { A: j.pr.a, B: j.pr.b, none: 'neither, or they are equal' } };
       if (settings.intim) q[`x${i}`] = { type: 'noul', instructions: `In this passage, did ${j.pr.a} and ${j.pr.b} actually have sex with each other? Count only what happens now in the story, not a memory, dream, fantasy, plan, joke, or refusal. «${clip(j.c.text, 700)}»` };
     });
     threadJobs.forEach((j, i) => {
@@ -1367,6 +1401,8 @@
             if (j.pr.events.length > 60) j.pr.events = j.pr.events.slice(-60);
           }
           if (j.askType) { const [ty, pty] = topChoice(a[`y${i}`]); if (REL_TYPES[ty] && pty >= 0.45) j.pr.type = ty; }
+          if (!relDir(j.pr.type)) delete j.pr.who;
+          else if (j.askType || j.askWho) { const [w, pw] = topChoice(a[`yw${i}`]); if ((w === 'A' || w === 'B') && pw >= 0.5) j.pr.who = w === 'A' ? j.pr.a : j.pr.b; }
           if (settings.intim && Number(a[`x${i}`]?.noul ?? 0) >= INTIM_P) countIntim(j.pr, j.c);
         });
         threadJobs.forEach((j, i) => {
@@ -1544,7 +1580,7 @@
       const other = p.a === from ? p.b : p.a;
       if (other === into) continue;
       const q = pairOf(into, other, true);
-      q.co += p.co; q.aff = Math.max(-10, Math.min(10, q.aff + p.aff)); q.type ??= p.type; q.last = Math.max(q.last ?? 0, p.last ?? 0);
+      q.co += p.co; q.aff = Math.max(-10, Math.min(10, q.aff + p.aff)); q.type ??= p.type; if (!q.who && p.who) q.who = p.who === from ? into : p.who; q.last = Math.max(q.last ?? 0, p.last ?? 0);
       q.events = [...q.events, ...p.events].sort((x, y) => x.mi - y.mi).slice(-60);
       if (p.intim) {
         const r = q.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null };
@@ -2641,7 +2677,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -2961,7 +2997,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     svg.addEventListener('wheel', (e) => { e.preventDefault(); const c = toLocal(e.clientX, e.clientY); zoomAt(c.x, c.y, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
   }
 
-  function relLabel(p) { return p.type ? REL_TYPES[p.type] : (p.co >= 3 ? '자주 함께' : '함께 나옴'); }
+  function relLabel(p) { return p.type ? relKo(p) : (p.co >= 3 ? '자주 함께' : '함께 나옴'); }
   // ── 정리할 것: 같은 사람 같아 보이는 이름 · 호칭만으로 잡힌 인물 ──
   function fixItems() {
     const pairs = sameSuggestions().map(x => ({ type: 'same', ...x }));
@@ -3182,7 +3218,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${pname(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="hint">${p.aliases.map(a => `<span class="chip">${escapeHtml(a)}</span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
       ${titleWarn}
       <div class="sec">관계</div>
-      ${rels.length ? rels.map(r => { const o = r.a === name ? r.b : r.a; const w = Math.abs(r.aff) * 5; return `<div class="relrow">${avatar(o, 'sm')}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b class="small">${pname(o)}</b><select class="sel" style="width:auto;min-height:32px;padding:2px 8px;font-size:12.5px" data-act="reltype" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}"><option value="">${r.co}번 함께</option>${Object.entries(REL_TYPES).map(([k, v]) => `<option value="${k}"${r.type === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+      ${rels.length ? rels.map(r => { const o = r.a === name ? r.b : r.a; const w = Math.abs(r.aff) * 5; return `<div class="relrow">${avatar(o, 'sm')}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b class="small">${pname(o)}</b><select class="sel" style="width:auto;min-height:32px;padding:2px 8px;font-size:12.5px" data-act="reltype" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}"><option value="">${r.co}번 함께</option>${REL_GROUPS.map(([g, ks]) => `<optgroup label="${g}">${ks.map(k => `<option value="${k}"${r.type === k ? ' selected' : ''}>${REL_TYPES[k]}</option>`).join('')}</optgroup>`).join('')}</select></div>
+          ${relDir(r.type) ? `<div class="mbar" style="margin-top:6px"><span class="lb2">누가 ${relDir(r.type)[0]}?</span>${[r.a, r.b].map(n => `<button class="chip${r.who === n ? ' on' : ''}" data-act="relwho" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-who="${escapeHtml(n)}">${pname(n)}</button>`).join('')}</div>` : ''}
           <div class="row" style="gap:6px;margin-top:6px"><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="더 멀게">${icon('minus', 16)}</button><span class="affbar"><i style="${r.aff >= 0 ? `left:50%;width:${w}%;background:var(--warm)` : `right:50%;width:${w}%;background:var(--cold)`}"></i></span><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="더 가깝게">${icon('plus', 16)}</button><span class="xs ${r.aff >= 2 ? 'warnc' : 'dim'}" style="min-width:56px;text-align:right">${affLabel(r.aff)} ${r.aff > 0 ? '+' : ''}${r.aff}</span></div>
           ${settings.intim || r.intim?.n ? `<div class="row" style="gap:6px;margin-top:6px"><span class="xs dim">관계 횟수</span><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="관계 횟수 −1">${icon('minus', 14)}</button><b class="small" style="min-width:18px;text-align:center">${r.intim?.n ?? 0}</b><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="관계 횟수 +1">${icon('plus', 14)}</button>${r.intim?.firstCk ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.firstCk)}">처음 #${r.intim.first + 1}</button>` : ''}${r.intim?.lastCk && r.intim.n > 1 ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.lastCk)}">최근 #${r.intim.last + 1}</button>` : ''}</div>` : ''}
           ${r.events.length ? `<div class="xs dim" style="margin-top:4px">${r.events.slice(-4).reverse().map(ev => `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(ev.ck)}">${ev.d > 0 ? '💗' : '💧'} #${ev.mi + 1}</button>`).join('')}</div>` : ''}</div></div>`; }).join('') : '<div class="small dim">아직 함께 나온 인물이 없어요.</div>'}
@@ -3464,7 +3501,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   async function onChange(e) {
     const el = e.target;
     if (el.dataset?.quick) { await saveSettings({ ...settings, [el.dataset.quick]: el.checked }); ui.draft = null; toast(el.checked ? '켰어요' : '껐어요'); render(); return; }
-    if (el.dataset?.act === 'reltype') { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.type = el.value || null; saveStory(); toast('관계를 바꿨어요'); } return; }
+    if (el.dataset?.act === 'reltype') { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.type = el.value || null; p.lock = !!p.type; if (!relDir(p.type)) delete p.who; saveStory(); render(); toast(relDir(p.type) && !p.who ? `누가 ${relDir(p.type)[0]}인지 골라 주세요` : '관계를 바꿨어요 (고정)'); } return; }
     if (el.dataset?.modelFor) {
       const input = el.parentElement?.querySelector(`[data-field="${el.dataset.modelFor}"]`);
       if (!input) return;
@@ -3507,6 +3544,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'spoil': el.classList.toggle('show'); return;
       case 'go-secrets': await leaveSettings(); ui.view = 'promises'; ui.tkind = 'secret'; ui.threads = 'open'; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
+      case 'relwho': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.who = el.dataset.who; p.lock = true; saveStory(); render(); } return; }
       case 'fix-merge': { const into = el.dataset.into || document.getElementById(el.dataset.sel)?.value; if (!into) { toast('합칠 사람을 고르세요'); return; } mergePeople(el.dataset.from, into); ui.layout = null; render(); toast(`${josa(el.dataset.from, '을', '를')} ${into}${hasBatchim(into) ? '과' : '와'} 합쳤어요.`); return; }
       case 'fix-no': markNotSame(el.dataset.a, el.dataset.b); render(); return;
       case 'fix-hide': hidePerson(el.dataset.name); ui.layout = null; render(); toast(`${josa(el.dataset.name, '을', '를')} 숨겼어요.`); return;
