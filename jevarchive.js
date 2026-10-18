@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.0.5
+//@version 0.0.6
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1815,14 +1815,13 @@
     } finally {
       busy = false;
       endTrace(tr);
+      // 이야기 정리는 보낸 직후 뒤에서 (기다리지 않음). 답장 뒤에는 아무것도 안 한다
+      if (tr && ready() && chatKey) setTimeout(queueStory, 0);
     }
   }
 
-  // 답장 뒤: 이야기 분석만 뒤에서 (기다림 없음)
-  async function afterRequestHandler(content, type) {
-    if ((type === 'model' || type === 'main' || type == null) && ready() && chatKey) queueStory();
-    return content;
-  }
+  // 답장이 와도 할 일이 없다 (저장은 보낼 때, 빠진 것만)
+  async function afterRequestHandler(content) { return content; }
 
   /** 지금 전부 색인: Risu가 안 보낸 메시지 전부 (보낸 적 없어도 채팅에 있는 것은 전부) */
   let processing = null;
@@ -2245,7 +2244,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     if (!needsSetup() && stats.lastError && Date.now() - stats.lastErrorAt < 10 * 60 * 1000) out.push({ tone: 'bad', ic: 'alert', t: '최근 오류', d: `${timeAgo(stats.lastErrorAt)} · ${stats.lastError} · 그래도 보내기는 멈추지 않아요.`, act: 'go-settings', label: '연결 확인' });
     const left = st.sendable - st.indexedMsgs;
     if (!needsSetup() && left > 0) out.push({ tone: 'warn', ic: 'db', t: `색인 안 된 이전 메시지 ${left}개`, d: `보낼 때마다 최근 것부터 ${settings.indexPerSend}개씩 해요. 한 번에 하려면 눌러 주세요 (임베딩만, Jev 없음).`, act: 'index-all', label: processing ? '색인 중…' : '지금 색인', busy: !!processing });
-    if (!needsSetup() && settings.story && st.storyLeft > 0 && left === 0) out.push({ tone: 'ac', ic: 'people', t: `이야기 정리 안 된 메시지 ${st.storyLeft}개`, d: '인물 · 관계 · 약속 · 사건 카드를 만들어요. 답장마다 조금씩 자동으로 하고, 한 번에 하려면 눌러 주세요.', act: 'story-all', label: storyAll ? '정리 중…' : '지금 정리', busy: !!storyAll });
+    if (!needsSetup() && settings.story && st.storyLeft > 0 && left === 0) out.push({ tone: 'ac', ic: 'people', t: `이야기 정리 안 된 메시지 ${st.storyLeft}개`, d: '인물 · 관계 · 약속 · 사건 카드를 만들어요. 보낼 때마다 뒤에서 조금씩 자동으로 하고, 한 번에 하려면 눌러 주세요.', act: 'story-all', label: storyAll ? '정리 중…' : '지금 정리', busy: !!storyAll });
     return out;
   }
   const alertHtml = (a) => `<div class="alert ${a.tone}"><span class="ic">${icon(a.ic)}</span><div class="t"><b>${escapeHtml(a.t)}</b><div class="d">${escapeHtml(a.d)}</div></div><button class="btn ${a.tone === 'bad' ? 'p' : ''}" data-act="${a.act}"${a.busy ? ' disabled' : ''}>${escapeHtml(a.label)}</button></div>`;
@@ -2572,7 +2571,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const cur = presetOf(d);
     return `<div class="onb">${steps}<h2>기억하는 방식</h2><p class="lead">나중에 설정에서 언제든 바꿀 수 있어요.</p>
       <div class="card"><div class="lb" style="font-weight:600;margin-bottom:8px">얼마나 넣을까요?</div>${presetSeg(cur)}
-        <div class="field inline" style="margin-top:8px"><div><div class="lb">인물 · 관계 · 약속 기록</div><div class="help">답장이 온 뒤 뒤에서 정리해요. 보내기는 느려지지 않아요.</div></div>${sw('story', d.story)}</div>
+        <div class="field inline" style="margin-top:8px"><div><div class="lb">인물 · 관계 · 약속 기록</div><div class="help">보낸 뒤 뒤에서 정리해요. 보내기는 느려지지 않아요.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><div class="lb">감독 힌트</div><div class="help">답장마다 템포 · 분위기와 장면에 맞는 연출을 짧게 귀띔해요. 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div></div>
       <div class="card small muted">토큰을 아끼려면 Risu 설정에서 <b>최대 컨텍스트</b>나 <b>채팅 범위</b>를 줄이세요. 줄어든 만큼 JevArchive가 옛날 대화에서 필요한 부분만 넣어요. Risu 자체 메모리(하이파 · 수파)는 꺼 두세요.</div>
       ${nav(true, 'onb-finish', '완료')}</div>`;
@@ -2650,7 +2649,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
           <div class="field inline"><div><label>보낼 때 색인 개수</label><div class="help">밀린 게 이보다 많으면 최근 것부터 이만큼씩.</div></div>${num('indexPerSend', 1, 5000)}</div>
         </details>
       </section>
-      <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">답장 뒤 뒤에서 · 보내기는 안 느려져요</span></div>
+      <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">뒤에서 정리 · 보내기는 안 느려져요</span></div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><label>사건 카드</label><div class="help">"누가 → 누구에게: 무엇을" 카드를 만들어 인물 페이지에 보여 주고, 기억을 찾는 열쇠로도 써요. 넣는 건 여전히 원문이에요. Jev 질문이 꽤 늘어요(그래도 싸요).</div></div>${sw('cards', d.cards)}</div>
         <div class="field inline"><div><label>관계 횟수 (성인)</label><div class="help">두 사람이 실제로 관계를 가진 횟수를 세요. 회상 · 꿈 · 계획 · 농담은 안 세고, 같은 장면은 한 번만. 인물 페이지에서 고칠 수 있고, 둘이 같이 나올 때만 짧게 넣어요. 이야기 정리에 질문 하나만 더해요.</div></div>${sw('intim', d.intim)}</div>
