@@ -2256,7 +2256,7 @@
 
   const ui = {
     open: false, view: 'now', sheet: null, progress: '', test: {}, bound: false, draft: null, onboard: null, saved: '',
-    graph: { x: 0, y: 0, k: 1 }, layout: null, layoutSig: '', search: { q: '', results: null, busy: false, pins: false },
+    graph: { x: 0, y: 0, k: 1 }, layout: null, layoutSig: '', search: { q: '', results: null, busy: false, pins: false }, mem: { kind: 'all', role: 'all', person: '', sort: 'new', view: 'tile', limit: 60 },
     threads: 'open', keepOpen: new Map(), saveTimer: null, peopleQ: '',
   };
 
@@ -2519,6 +2519,25 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 .trace:last-child{border-bottom:0}
 .bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--tx3);margin-top:4px}
 .bar .meter{max-width:180px}
+.mbar{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0}
+.mbar .chip{cursor:pointer;font-family:inherit}
+.mbar .chip.on{background:var(--s3);color:var(--tx);border-color:var(--ac)}
+.mbar .lb2{font-size:11.5px;color:var(--tx3);align-self:center;margin-right:2px;min-width:30px}
+.mhead{display:flex;align-items:center;gap:8px;margin:12px 2px 8px;font-size:12.5px;color:var(--tx3)}
+.mhead .sp{flex:1}
+.mgrp{margin:16px 2px 8px;font-size:12.5px;font-weight:700;color:var(--tx2);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.mgrp span{font-weight:400;color:var(--tx3)}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}
+.mtile{display:flex;flex-direction:column;gap:6px;text-align:left;padding:10px 12px;border-radius:14px;background:var(--s1,#141923);border:1px solid var(--line);color:var(--tx);font:inherit;cursor:pointer;min-width:0}
+.mtile:hover{border-color:var(--ac)}
+.mtile .mt{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx3)}
+.mtile .mt .sp{flex:1}
+.mtile .tx{font-size:13.5px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.mtile .mf{display:flex;flex-wrap:wrap;gap:4px}
+.mtile .mf .slot{font-size:11px;padding:2px 6px}
+.mtile.low{opacity:.62}
+@media (max-width:520px){.mgrid{grid-template-columns:1fr 1fr}.mtile .tx{-webkit-line-clamp:5;font-size:13px}}
+.titlewarn{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;background:rgba(244,184,96,.10);border:1px solid rgba(244,184,96,.3);margin:10px 0 4px;font-size:13px;line-height:1.55}
 `;
 
 
@@ -2553,7 +2572,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).']],
+    ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 타일로: 종류 · 누가 · 인물로 거르고, 최신/오래된 순, 이야기 날짜별로 묶어서 전부 훑어볼 수 있어요.', '"누나" · "언니" 같은 호칭만으로 잡힌 인물은 "누나(???)"로 보이고, 위에 숨기기 · 합치기 버튼이 떠요.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
       '기억을 문장으로: 메시지를 문장으로 나누고, Jev가 사건 · 행동 · 사실 · 약속 · 비밀만 골라 저장해요. 잡담 · 질문은 버려요.',
@@ -2571,6 +2590,10 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     ['0.0.1', '2026-10-18', ['첫 공개: 옛날 대화 기억, 인물 · 관계 · 약속 정리, 감독 힌트.']],
   ];
   const needsSetup = () => !settings.onboarded || !settings.jevKey;
+  // 호칭만으로 잡힌 인물 (여러 사람을 이렇게 부를 수 있어 누군지 확실하지 않다)
+  const TITLE_NAME = /^(누나|누님|언니|오빠|오라버니|형|형님|선배|선배님|후배|님|씨|아저씨|아줌마|이모|삼촌|선생님|쌤|주인님|주인|도련님|아가씨|마스터|언냐|자기|여보|아빠|엄마|할머니|할아버지)$/;
+  const isTitleName = (n) => TITLE_NAME.test(String(n ?? '').trim());
+  const pname = (n) => escapeHtml(n) + (isTitleName(n) ? '<span class="dim">(???)</span>' : '');
 
   // ══ 열기 · 그리기 ══
   async function openPanel(view) {
@@ -2821,7 +2844,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const lines = edges.map(e => { const a = pos[e.a], b = pos[e.b]; return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${edgeColor(e)}" stroke-width="${(1.2 + Math.min(5, Math.log2(1 + e.co))).toFixed(1)}" stroke-opacity="${Math.min(0.95, 0.35 + e.co / 20).toFixed(2)}" stroke-linecap="round"/>`; }).join('');
     const nodes = ppl.map(p => {
       const q = pos[p.name], r = 17 + Math.min(11, Math.sqrt(p.count) * 2), h = hueOf(p.name);
-      return `<g class="node" data-act="person" data-name="${escapeHtml(p.name)}" transform="translate(${q.x.toFixed(1)} ${q.y.toFixed(1)})"><circle r="${r.toFixed(1)}" fill="hsl(${h} 45% 24%)" stroke="hsl(${h} 70% ${p.kind === 'char' ? 72 : 52}%)"/><text text-anchor="middle" dy="5" fill="hsl(${h} 90% 86%)">${escapeHtml(p.name.slice(0, 1))}</text><text class="lbl" text-anchor="middle" y="${(r + 17).toFixed(1)}">${escapeHtml(clip(p.name, 8))}</text></g>`;
+      return `<g class="node" data-act="person" data-name="${escapeHtml(p.name)}" transform="translate(${q.x.toFixed(1)} ${q.y.toFixed(1)})"><circle r="${r.toFixed(1)}" fill="hsl(${h} 45% 24%)" stroke="hsl(${h} 70% ${p.kind === 'char' ? 72 : 52}%)"/><text text-anchor="middle" dy="5" fill="hsl(${h} 90% 86%)">${escapeHtml(p.name.slice(0, 1))}</text><text class="lbl" text-anchor="middle" y="${(r + 17).toFixed(1)}">${escapeHtml(clip(p.name, 8))}${isTitleName(p.name) ? '(???)' : ''}</text></g>`;
     }).join('');
     const { W, H } = graphBox();
     return `<svg class="graph" viewBox="0 0 ${W} ${H}" data-graph role="img" aria-label="인물 관계도"><g data-pan transform="translate(${g.x} ${g.y}) scale(${g.k})">${lines}${nodes}</g></svg>`;
@@ -2884,7 +2907,7 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <section class="card">
         <div class="ch"><h2>인물 ${list.length}명</h2></div>
         <div class="search" style="margin-bottom:6px">${icon('search', 18)}<input id="pq" placeholder="이름 찾기" value="${escapeHtml(ui.peopleQ)}" autocomplete="off"></div>
-        <div class="list">${list.map(p => { const b = best(p.name); const other = b ? (b.a === p.name ? b.b : b.a) : null; return `<button class="item" data-act="person" data-name="${escapeHtml(p.name)}">${avatar(p.name)}<div class="t"><b>${escapeHtml(p.name)}${p.kind === 'char' ? ' <span class="tag">캐릭터</span>' : p.kind === 'persona' ? ' <span class="tag">나</span>' : ''}</b><span>${p.count}번 등장${other ? ` · ${escapeHtml(josa(other, '과', '와'))} ${relLabel(b)}` : ''}</span></div>${b ? `<span class="chip ${b.aff >= 2 ? 'warm' : b.aff <= -2 ? 'cold' : ''}">${affLabel(b.aff)}</span>` : ''}</button>`; }).join('') || '<div class="empty small">찾는 이름이 없어요.</div>'}</div>
+        <div class="list">${list.map(p => { const b = best(p.name); const other = b ? (b.a === p.name ? b.b : b.a) : null; return `<button class="item" data-act="person" data-name="${escapeHtml(p.name)}">${avatar(p.name)}<div class="t"><b>${pname(p.name)}${p.kind === 'char' ? ' <span class="tag">캐릭터</span>' : p.kind === 'persona' ? ' <span class="tag">나</span>' : ''}</b><span>${p.count}번 등장${other ? ` · ${escapeHtml(josa(other, '과', '와'))} ${relLabel(b)}` : ''}</span></div>${b ? `<span class="chip ${b.aff >= 2 ? 'warm' : b.aff <= -2 ? 'cold' : ''}">${affLabel(b.aff)}</span>` : ''}</button>`; }).join('') || '<div class="empty small">찾는 이름이 없어요.</div>'}</div>
       </section></div>`;
   }
 
@@ -2929,12 +2952,61 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     } else if (s.q.trim()) {
       body = s.busy ? '<div class="empty">찾는 중…</div>' : (s.results?.length ? s.results.map(f => factItem(f, s.q)).join('') : '<div class="empty"><b>찾은 게 없어요</b>다른 말로 찾아보세요.</div>');
     } else {
-      const recent = facts.slice(-30).reverse();
-      body = recent.length ? `<div class="sec" style="margin-top:4px">최근 기억 (칸 줄)</div>${recent.map(f => factItem(f)).join('')}` : '<div class="empty"><div class="big">🗂️</div><b>아직 기억이 없어요</b>대화를 이어 가면 보낼 때마다 뒤에서 칸 줄 기억으로 정리돼요.</div>';
+      return memExplorer(s);
     }
     return `<form class="search" data-act="search-form" onsubmit="return false">${icon('search', 18)}<input id="mq" placeholder="무엇을 찾을까요? (예: 바다 약속, 하윤 비밀)" value="${escapeHtml(s.q)}" autocomplete="off" enterkeyhint="search"><button class="btn sm p" data-act="search">찾기</button></form>
       <div class="seg"><button class="${!s.pins ? 'on' : ''}" data-act="mtab" data-v="all">전체</button><button class="${s.pins ? 'on' : ''}" data-act="mtab" data-v="pins">📌 고정 ${story.pins.length}</button></div>
       <section class="card" style="padding:4px 14px"><div class="list">${body}</div></section>`;
+  }
+
+  // ── 기억 탐색기: 타일로 전부 훑어보기 ──
+  function memFilter(m) {
+    let list = facts;
+    if (m.kind !== 'all') list = list.filter(f => f.k === m.kind);
+    if (m.role !== 'all') list = list.filter(f => (timeline[f.mi]?.role === 'user') === (m.role === 'user'));
+    if (m.person) { const forms = nameForms(story.people[m.person] ?? { name: m.person, aliases: [] }); list = list.filter(f => forms.some(n => f.sent.includes(n))); }
+    return m.sort === 'old' ? list : list.slice().reverse();
+  }
+  function memTile(f) {
+    const ck = `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`;
+    const who = timeline[f.mi]?.role === 'user' ? '나' : escapeHtml(characterCache.name || '캐릭터');
+    const kind = FACT_KO[f.k] ? `<span class="slot kind k-${f.k}">${FACT_KO[f.k]}</span>` : '';
+    const sl = TAG_KINDS.has(f.k) ? ROLE_ORDER.map((r, i) => (f.slots[i] && r !== 'when' && r !== 'where' && r !== 'what' ? `<span class="slot r-${r}"><i>${ROLE_KO[r]}</i>${escapeHtml(clip(f.slots[i], 14))}</span>` : '')).join('') : '';
+    return `<button class="mtile${(f.w ?? 3) < 1.5 ? ' low' : ''}" data-act="chunk" data-ck="${escapeHtml(ck)}"><div class="mt">${kind}<span>#${f.mi + 1} · ${who}</span><span class="sp"></span>${story.pins.includes(ck) ? '📌' : ''}</div><div class="tx">${escapeHtml(f.sent)}</div>${sl ? `<div class="mf">${sl}</div>` : ''}</button>`;
+  }
+  function memExplorer(s) {
+    const m = ui.mem;
+    const chip = (k, v, label) => `<button class="chip${m[k] === v ? ' on' : ''}" data-act="mf" data-k="${k}" data-v="${escapeHtml(v)}">${label}</button>`;
+    const counts = {};
+    for (const f of facts) counts[f.k] = (counts[f.k] ?? 0) + 1;
+    const people = personList().filter(p => !p.hidden).sort((a, b) => b.count - a.count).slice(0, 14);
+    const head = `<form class="search" data-act="search-form" onsubmit="return false">${icon('search', 18)}<input id="mq" placeholder="무엇을 찾을까요? (예: 바다 약속, 하윤 비밀)" value="${escapeHtml(s.q)}" autocomplete="off" enterkeyhint="search"><button class="btn sm p" data-act="search">찾기</button></form>
+      <div class="seg"><button class="on" data-act="mtab" data-v="all">전체 ${facts.length}</button><button data-act="mtab" data-v="pins">📌 고정 ${story.pins.length}</button></div>
+      <div class="mbar"><span class="lb2">종류</span>${chip('kind', 'all', '전체')}${Object.entries(FACT_KO).filter(([k]) => counts[k]).map(([k, ko]) => chip('kind', k, `${ko} ${counts[k]}`)).join('')}</div>
+      <div class="mbar"><span class="lb2">누가</span>${chip('role', 'all', '전체')}${chip('role', 'user', '나')}${chip('role', 'char', escapeHtml(characterCache.name || '캐릭터'))}</div>
+      ${people.length ? `<div class="mbar"><span class="lb2">인물</span>${chip('person', '', '전체')}${people.map(p => chip('person', p.name, pname(p.name))).join('')}</div>` : ''}`;
+    if (!facts.length) return `${head}<section class="card"><div class="empty"><div class="big">🏛️</div><b>아직 기억이 없어요</b>대화를 이어 가면 보낼 때마다 뒤에서 문장 기억으로 정리돼요.</div></section>`;
+    const all = memFilter(m);
+    const shown = all.slice(0, m.limit);
+    // 이야기 날짜별로 묶기 (상태창 기준). 메시지마다 한 번만 계산
+    const clk = new Map();
+    const groupOf = (mi) => { if (!clk.has(mi)) { const c = storyClock(mi + 1); clk.set(mi, { d: c.d ? clockLabel({ d: c.d }) : '', place: c.place ?? '' }); } return clk.get(mi); };
+    let html = '', cur = null, open = false;
+    for (const f of shown) {
+      const g = groupOf(f.mi);
+      const key = g.d || '날짜 없음';
+      if (key !== cur) {
+        if (open) html += '</div>';
+        html += `<div class="mgrp">${escapeHtml(key)}${g.place ? `<span>${escapeHtml(clip(g.place, 30))}</span>` : ''}</div><div class="mgrid">`;
+        cur = key; open = true;
+      }
+      html += memTile(f);
+    }
+    if (open) html += '</div>';
+    return `${head}
+      <div class="mhead"><span>${all.length}개 중 ${shown.length}개</span><span class="sp"></span>${chip('sort', 'new', '최신순')}${chip('sort', 'old', '오래된순')}</div>
+      ${html || '<div class="empty small">조건에 맞는 기억이 없어요.</div>'}
+      ${all.length > shown.length ? `<div class="row" style="justify-content:center;margin:14px 0"><button class="btn" data-act="mmore">더 보기 (${Math.min(60, all.length - shown.length)}개)</button><button class="btn g" data-act="mmore" data-all="1">전부 보기</button></div>` : ''}`;
   }
 
   // ══ 시트: 인물 · 기억 ══
@@ -2981,9 +3053,11 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
     const forms = nameForms(story.people[name] ?? { name, aliases: [] });
     for (let i = facts.length - 1; i >= 0 && acts.length < 8; i--) if ([0, 1, 2].some(j => forms.some(n => facts[i].slots[j]?.includes(n)))) acts.push(facts[i]);
     const others = personList().filter(x => x.name !== name && !x.hidden);
-    return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${escapeHtml(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="hint">${p.aliases.map(a => `<span class="chip">${escapeHtml(a)}</span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
+    const titleWarn = isTitleName(name) ? `<div class="titlewarn"><div>「${escapeHtml(name)}」${hasBatchim(name) ? '은' : '는'} 호칭이라 누군지 확실하지 않아요. 여러 사람을 이렇게 불렀으면 <b>숨기기</b>, 한 사람이면 그 사람과 <b>합치기</b>.</div><div class="row" style="gap:6px"><button class="btn sm d" data-act="hide-person" data-name="${escapeHtml(name)}">숨기기</button>${others.length ? `<select class="sel" id="merge-in" style="flex:1;min-width:120px"><option value="">합칠 사람…</option>${others.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join('')}</select><button class="btn sm" data-act="merge" data-name="${escapeHtml(name)}">합치기</button>` : ''}</div></div>` : '';
+    return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${pname(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="hint">${p.aliases.map(a => `<span class="chip">${escapeHtml(a)}</span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
+      ${titleWarn}
       <div class="sec">관계</div>
-      ${rels.length ? rels.map(r => { const o = r.a === name ? r.b : r.a; const w = Math.abs(r.aff) * 5; return `<div class="relrow">${avatar(o, 'sm')}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b class="small">${escapeHtml(o)}</b><select class="sel" style="width:auto;min-height:32px;padding:2px 8px;font-size:12.5px" data-act="reltype" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}"><option value="">${r.co}번 함께</option>${Object.entries(REL_TYPES).map(([k, v]) => `<option value="${k}"${r.type === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+      ${rels.length ? rels.map(r => { const o = r.a === name ? r.b : r.a; const w = Math.abs(r.aff) * 5; return `<div class="relrow">${avatar(o, 'sm')}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b class="small">${pname(o)}</b><select class="sel" style="width:auto;min-height:32px;padding:2px 8px;font-size:12.5px" data-act="reltype" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}"><option value="">${r.co}번 함께</option>${Object.entries(REL_TYPES).map(([k, v]) => `<option value="${k}"${r.type === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
           <div class="row" style="gap:6px;margin-top:6px"><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="더 멀게">${icon('minus', 16)}</button><span class="affbar"><i style="${r.aff >= 0 ? `left:50%;width:${w}%;background:var(--warm)` : `right:50%;width:${w}%;background:var(--cold)`}"></i></span><button class="iconbtn" style="width:32px;height:32px" data-act="aff" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="더 가깝게">${icon('plus', 16)}</button><span class="xs ${r.aff >= 2 ? 'warnc' : 'dim'}" style="min-width:56px;text-align:right">${affLabel(r.aff)} ${r.aff > 0 ? '+' : ''}${r.aff}</span></div>
           ${settings.intim || r.intim?.n ? `<div class="row" style="gap:6px;margin-top:6px"><span class="xs dim">관계 횟수</span><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="-1" aria-label="관계 횟수 −1">${icon('minus', 14)}</button><b class="small" style="min-width:18px;text-align:center">${r.intim?.n ?? 0}</b><button class="iconbtn" style="width:28px;height:28px" data-act="intim" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-d="1" aria-label="관계 횟수 +1">${icon('plus', 14)}</button>${r.intim?.firstCk ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.firstCk)}">처음 #${r.intim.first + 1}</button>` : ''}${r.intim?.lastCk && r.intim.n > 1 ? `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(r.intim.lastCk)}">최근 #${r.intim.last + 1}</button>` : ''}</div>` : ''}
           ${r.events.length ? `<div class="xs dim" style="margin-top:4px">${r.events.slice(-4).reverse().map(ev => `<button class="btn sm g" data-act="chunk" data-ck="${escapeHtml(ev.ck)}">${ev.d > 0 ? '💗' : '💧'} #${ev.mi + 1}</button>`).join('')}</div>` : ''}</div></div>`; }).join('') : '<div class="small dim">아직 함께 나온 인물이 없어요.</div>'}
@@ -2992,8 +3066,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       <div class="sec">고치기</div>
       <div class="col">
         <div class="row"><input class="inp" id="alias-in" placeholder="다른 이름(별명) 추가" style="flex:1;min-width:140px"><button class="btn" data-act="alias" data-name="${escapeHtml(name)}">추가</button></div>
-        ${others.length ? `<div class="row"><select class="sel" id="merge-in" style="flex:1;min-width:140px"><option value="">같은 인물로 합치기…</option>${others.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join('')}</select><button class="btn" data-act="merge" data-name="${escapeHtml(name)}">합치기</button></div>` : ''}
-        <button class="btn d" data-act="hide-person" data-name="${escapeHtml(name)}">인물이 아니에요 (목록에서 빼기)</button>
+        ${others.length && !titleWarn ? `<div class="row"><select class="sel" id="merge-in" style="flex:1;min-width:140px"><option value="">같은 인물로 합치기…</option>${others.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join('')}</select><button class="btn" data-act="merge" data-name="${escapeHtml(name)}">합치기</button></div>` : ''}
+        ${titleWarn ? '' : `<button class="btn d" data-act="hide-person" data-name="${escapeHtml(name)}">숨기기 (인물이 아니에요)</button>`}
       </div>`;
   }
   function chunkSheet(ck) {
@@ -3308,6 +3382,8 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
       case 'spoil': el.classList.toggle('show'); return;
       case 'go-secrets': await leaveSettings(); ui.view = 'promises'; ui.tkind = 'secret'; ui.threads = 'open'; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
+      case 'mf': ui.mem[el.dataset.k] = ui.mem[el.dataset.k] === el.dataset.v && el.dataset.k === 'person' ? '' : el.dataset.v; if (el.dataset.k !== 'sort') ui.mem.limit = 60; render(); return;
+      case 'mmore': ui.mem.limit = el.dataset.all ? Infinity : ui.mem.limit + 60; render(); return;
       case 'search': await doSearch(); return;
       case 'intim': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { const r = p.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null }; r.n = Math.max(0, r.n + Number(el.dataset.d)); saveStory(); } render(); return; }
       case 'aff': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.aff = Math.max(-10, Math.min(10, p.aff + Number(el.dataset.d))); saveStory(); } render(); return; }
