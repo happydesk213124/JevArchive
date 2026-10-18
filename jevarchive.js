@@ -1,7 +1,7 @@
 //@name jevarchive
 //@display-name JevArchive
 //@api 3.0
-//@version 0.1.1
+//@version 0.1.2
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1876,7 +1876,10 @@
   const UPDATE_CUE = /바뀌|바꿨|변경|정정|이제는|지금은|현재|더 이상|대신|옮겼|옮긴|새로운|갱신|업데이트|최신/u;   // 바뀜 표시
   const FACT_K = { event: 'E', action: 'A', fact: 'F', promise: 'P', secret: 'S' };
   const FACT_KO = { event: '사건', action: '행동', fact: '사실', promise: '약속', secret: '비밀' };
-  const SLOT_ROLES = { who: 'who', with: 'with whom', whom: 'to/from whom', when: 'when', where: 'where', what: 'what', how: 'how', why: 'why', none: 'none' };
+  const SLOT_ROLES = { who: 'who', with: 'with', whom: 'whom', when: 'when', where: 'where', what: 'what', how: 'how', why: 'why', none: 'none' };
+  const KIND_SHORT = { event: 'event', action: 'action', fact: 'fact', promise: 'promise', secret: 'secret', skip: 'skip' };
+  const KIND_GUIDE = `[KINDS] For each Sn, pick its kind: ${Object.entries(FACT_KINDS).map(([k, d]) => `${k} = ${d}`).join('; ')}.`;
+  const ROLE_GUIDE = '[ROLES] For each "Sn «word»", pick the role of that word in Sn: who = the doer; with = who does it together with them; whom = the target, or the one something is kept from; when; where; what = the action or the thing itself; how = manner or means; why = reason or purpose; none = filler, ending, or connective.';
   const MAX_FACT_SENTS = 24;   // 메시지 하나에서 칸 줄로 만들 문장 수
   const FACT_PER_CALL = 40;    // Jev 한 번에 보여 줄 문장 수
   let factStore = new Map();   // 메시지 지문 → [{ pos, si, k, s: [8칸], vec, p }]  (빈 배열 = 정리했지만 남길 게 없음)
@@ -1961,8 +1964,11 @@
       if (/(랑|이랑|와|과|하고)$/.test(bare)) return 'with';
       if (/(에게|에게는|에게도|한테|한테는|께|을|를|몰래)$/.test(bare)) return 'whom';
     }
-    if (TIME_WORD.test(bare)) return 'when';
-    if (/(에서|에서는|까지)$/.test(bare) && bare.length > 2) return 'where';
+    if (TIME_WORD.test(bare) || /(무렵|동안|직후|직전|전에|후에|뒤에|때|때는|때마다)$/.test(bare)) return 'when';
+    if (/(에서|에서는|에서도|에선|까지|으로부터|로부터)$/.test(bare) && bare.length > 2) return 'where';
+    if (/(때문에|위해|위해서|위하여|탓에|덕분에|려고|으려고)$/.test(bare) && bare.length > 2) return 'why';
+    if (/(히|하게|스럽게|롭게|없이|으로써|로써)$/.test(bare) && bare.length > 2 && !/에게$/.test(bare)) return 'how';
+    if (/^(했다|했어|했지|했고|한다|하였다|있었다|있다|있어|었다|였다|이었다|이다|이야|거야|거든|같았다|보였다|된다|됐다|되었다|않았다|않는다|못했다|없었다|없다|말했다|물었다|답했다|대답했다)[.!?…"”']*$/u.test(w)) return 'none';
     return null;
   }
   /** Jev가 "none"이라 해도 이름 · 숫자가 든 단어는 버리지 않는다 (기억에서 빠지면 안 되는 것) */
@@ -1993,18 +1999,19 @@
     for (let i = 0; i < jobs.length; i += FACT_PER_CALL) {
       const part = jobs.slice(i, i + FACT_PER_CALL);
       const state = part.map((j, n) => `S${n}: ${j.s}`).join('\n');
+      const state1 = `${KIND_GUIDE}\n${state}`, state2 = `${ROLE_GUIDE}\n${state}`;
       // ① 종류만
       const q1 = {};
-      part.forEach((j, n) => { q1[`f${n}`] = { type: 'choice', instructions: `S${n}: what kind of sentence is it?`, criteria: FACT_KINDS }; });
+      part.forEach((j, n) => { q1[`f${n}`] = { type: 'choice', instructions: `S${n}`, criteria: KIND_SHORT }; });
       let a = {};
-      try { a = await callJev(state, q1); } catch (error) { setError('기억 만들기', error); return 0; }
+      try { a = await callJev(state1, q1); } catch (error) { setError('기억 만들기', error); return 0; }
       if (chatKey !== room) return 0;
       part.forEach((j, n) => { j.kind = topChoice(a[`f${n}`])[0]; });
       // ② 사건 · 행동 · 약속 · 비밀 문장만 단어 칸 (규칙으로 못 정한 단어만)
       const q2 = {};
-      part.forEach((j, n) => { if (TAG_KINDS.has(j.kind)) j.words.forEach((w, k) => { if (j.rule[k] == null) q2[`g${n}_${k}`] = { type: 'choice', instructions: `S${n}, word ${k + 1} «${w}»: its role in S${n}?`, criteria: SLOT_ROLES }; }); });
+      part.forEach((j, n) => { if (TAG_KINDS.has(j.kind)) j.words.forEach((w, k) => { if (j.rule[k] == null) q2[`g${n}_${k}`] = { type: 'choice', instructions: `S${n} «${w}»`, criteria: SLOT_ROLES }; }); });
       if (Object.keys(q2).length) {
-        try { Object.assign(a, await callJev(state, q2)); } catch (error) { setError('칸 나누기', error); }
+        try { Object.assign(a, await callJev(state2, q2)); } catch (error) { setError('칸 나누기', error); }
         if (chatKey !== room) return 0;
       }
       part.forEach((j, n) => {
