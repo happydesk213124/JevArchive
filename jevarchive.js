@@ -1814,7 +1814,7 @@
       while (seen.has(id)) id += 'x';
       seen.add(id);
       const affN = c.aff === null || c.aff === '' || c.aff === undefined ? NaN : Number(c.aff);
-      out.push({ id, pack: /^up_[a-z0-9]{2,24}$/.test(c.pack ?? '') ? c.pack : 'custom', name, when: s(c.when, 160), text, aff: Number.isFinite(affN) ? Math.max(-10, Math.min(10, Math.round(affN))) : null, promise: c.promise === true });
+      out.push({ id, pack: /^up_[a-z0-9]{2,24}$/.test(c.pack ?? '') || DIR_PACKS[c.pack] ? c.pack : 'custom', name, when: s(c.when, 160), text, aff: Number.isFinite(affN) ? Math.max(-10, Math.min(10, Math.round(affN))) : null, promise: c.promise === true });
       if (out.length >= 2000) break;
     }
     return out;
@@ -1848,7 +1848,8 @@
     return withOff ? out : out.filter(c => !off.has(c.id));
   }
   function packCards(pid, cfg = settings) {
-    return isUserPack(pid) ? cfg.dirCustom.filter(c => (c.pack ?? 'custom') === pid) : (DIR_PACKS[pid]?.cards ?? []).map(c => dirCardOf(pid, c));
+    const mine = cfg.dirCustom.filter(c => (c.pack ?? 'custom') === pid);
+    return isUserPack(pid) ? mine : [...(DIR_PACKS[pid]?.cards ?? []).map(c => dirCardOf(pid, c)), ...mine];
   }
 
   /** {char} {user} {other}를 이름으로. {other}가 필요한데 장면에 다른 인물이 없으면 null */
@@ -2796,6 +2797,13 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 .bgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .tagchips{display:flex;flex-wrap:wrap;gap:6px}
 .fold.off{opacity:.55}
+.ctool{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:14px;background:var(--s1,#141923);border:1px solid var(--line)}
+.ctool .ctl{display:flex;align-items:center;gap:8px;font-size:13.5px}
+.ctool .seg.mini{padding:3px;flex:none}
+.ctool .seg.mini button{min-height:30px;font-size:12.5px;padding:0 12px}
+.ctool .meta{font-size:12px;color:var(--tx3);margin-left:auto}
+.phs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.phs .chip{cursor:pointer;font-family:inherit}
 .fold .tg{flex:none;width:38px;height:22px;border-radius:999px;border:0;background:var(--s3);position:relative;cursor:pointer}
 .fold .tg::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--tx3);transition:left .15s}
 .fold .tg.on{background:var(--ac)}
@@ -2924,7 +2932,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 카드는 위 칸에 바로 써서 추가해요. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 묶음 이름 옆 [+ 카드]로 어느 묶음에든(공포 같은 기본 묶음도) 내 카드를 더해요. 감독 · 얼마나 자주는 한 줄로. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -3453,10 +3461,7 @@ details.more.danger summary{color:var(--tx2)}
     if (c.pack && !packs.some(p => p.id === c.pack)) c.pack = null;
     const sel = c.pack ?? packs[0].id;
     const cur = packs.find(p => p.id === sel);
-    const head = `<section class="card"><div class="ch"><h2>연출 카드</h2><span class="sp"></span><span class="meta">켜진 카드 ${allDirCards(cfg).length}장 · 지금 장면에 맞는 걸 Jev가 골라요</span></div>
-        <div class="field inline" style="padding-top:0"><div><div class="lb">감독 힌트 · 연출 카드</div><div class="help">${cfg.director ? (cfg.dirCards ? '켜짐: 답장마다 맞는 카드가 있으면 한 줄 넣어요.' : '감독은 켜졌지만 카드는 꺼져 있어요 (설정 › 이야기).') : '감독 힌트가 꺼져 있어요. 켜야 카드를 써요.'}</div></div>${sw('director', cfg.director, 'quick')}</div>
-        <div class="seg" style="margin-top:6px">${Object.entries(DIR_FREQ_KO).map(([k, [t, sub]]) => `<button class="${cfg.dirFreq === k ? 'on' : ''}" data-act="dirfreq" data-v="${k}">${t}<small>${sub}</small></button>`).join('')}</div>
-      </section>`;
+    const head = `<div class="ctool"><label class="ctl"><b>감독</b>${sw('director', cfg.director, 'quick')}</label><div class="seg mini">${Object.entries(DIR_FREQ_KO).map(([k, [t]]) => `<button class="${cfg.dirFreq === k ? 'on' : ''}" data-act="dirfreq" data-v="${k}">${t}</button>`).join('')}</div><span class="meta">켜진 카드 ${allDirCards(cfg).length}장${cfg.director ? '' : ' · 감독이 꺼져 있어요'}</span></div>`;
     const fold = packs.map(p => { const n = packCards(p.id, cfg).length, on = cfg.dirPacks.includes(p.id); return `<div class="fold${sel === p.id ? ' on' : ''}${on ? '' : ' off'}" role="button" tabindex="0" data-act="cpack" data-v="${p.id}"><span class="ic">${escapeHtml(p.icon)}</span><div class="t"><b>${escapeHtml(p.name)}</b><span>${n}장 · ${escapeHtml(p.desc)}</span></div><button class="tg${on ? ' on' : ''}" data-act="dirpack" data-v="${p.id}" aria-label="${on ? '끄기' : '켜기'}" title="${on ? '이 묶음 쓰는 중 · 누르면 끄기' : '꺼짐 · 누르면 켜기'}"></button></div>`; }).join('');
     const newPack = c.newPack
       ? `<div class="newpack"><input class="inp" id="np-icon" maxlength="2" placeholder="📁" style="width:52px;text-align:center"><input class="inp" id="np-name" maxlength="20" placeholder="묶음 이름 (예: 학원물)" style="flex:1"><button class="btn sm p" data-act="pack-create">만들기</button><button class="btn sm g" data-act="pack-new-cancel">취소</button></div>`
@@ -3464,23 +3469,12 @@ details.more.danger summary{color:var(--tx2)}
     const q = c.q.trim();
     let list = packCards(sel, cfg);
     if (q) list = list.filter(x => `${x.name} ${x.when} ${x.text}`.includes(q));
-    const editing = c.edit ? cfg.dirCustom.find(x => x.id === c.edit) : null;
-    const composer = !cur?.mine ? '' : `<div class="composer">
-          <div class="lb">${editing ? '카드 고치기' : '새 카드'}</div>
-          <input class="inp" id="cc-name" maxlength="40" placeholder="이름 (예: 말없는 질투)" value="${escapeHtml(editing?.name ?? '')}">
-          <textarea class="inp" id="cc-text" rows="3" maxlength="400" placeholder="연출: {char}가 괜히 말수가 줄어든다. 이유는 말하지 않는다.">${escapeHtml(editing?.text ?? '')}</textarea>
-          <div class="phs"><span class="xs dim">넣기</span><button class="chip" data-act="ph-insert" data-v="{char}">캐릭터</button><button class="chip" data-act="ph-insert" data-v="{user}">나</button><button class="chip" data-act="ph-insert" data-v="{other}">다른 인물</button><span class="xs dim">· 조사는 알아서 맞춰요</span></div>
-          <details class="more"${keepOpen('cc-more', !!(editing?.when || editing?.aff != null))}><summary>언제 쓸지 · 조건 (선택)</summary>
-            <input class="inp" id="cc-when" maxlength="160" placeholder="언제 (예: {other}가 {user} 곁에 있을 때)" value="${escapeHtml(editing?.when ?? '')}" style="margin-top:6px">
-            <input class="inp" id="cc-aff" type="number" inputmode="numeric" min="-10" max="10" placeholder="가까움 조건 (예: 3 = 3 이상일 때만, 비우면 없음)" value="${editing?.aff ?? ''}" style="margin-top:6px">
-          </details>
-          <div class="row" style="justify-content:flex-end;gap:6px">${editing ? '<button class="btn sm g" data-act="card-cancel">취소</button>' : ''}<button class="btn sm p" data-act="card-save">${editing ? '저장' : '추가'}</button></div>
-        </div>`;
-    const cards = list.length ? `<div class="cgrid">${list.map(x => { const isOff = off.has(x.id); return `<div class="ccard${isOff ? ' off' : ''}"><div class="ch2"><b>${escapeHtml(x.name)}</b>${x.aff != null ? `<span class="tag">${x.aff >= 0 ? `가까움 ${x.aff}+` : `사이 나쁨 ${x.aff}↓`}</span>` : ''}<button class="tg-s btn sm ${isOff ? '' : 'g'}" data-act="card-toggle" data-id="${escapeHtml(x.id)}">${isOff ? '꺼짐' : '켜짐'}</button></div>${x.when ? `<div class="when">언제 · ${ph(x.when)}</div>` : ''}<div class="txt">${ph(x.text)}</div>${cur?.mine ? `<div class="acts"><button class="btn sm g" data-act="card-edit" data-id="${escapeHtml(x.id)}">고치기</button><button class="btn sm g" data-act="card-del" data-id="${escapeHtml(x.id)}">지우기</button></div>` : ''}</div>`; }).join('')}</div>`
-      : `<div class="empty small">${q ? '찾는 카드가 없어요.' : cur?.mine ? '아직 카드가 없어요. 위에서 하나 써 보세요.' : '카드가 없어요.'}</div>`;
+    const isMine = (x) => cfg.dirCustom.some(y => y.id === x.id);
+    const cards = list.length ? `<div class="cgrid">${list.map(x => { const isOff = off.has(x.id); return `<div class="ccard${isOff ? ' off' : ''}"><div class="ch2"><b>${escapeHtml(x.name)}</b>${x.aff != null ? `<span class="tag">${x.aff >= 0 ? `가까움 ${x.aff}+` : `사이 나쁨 ${x.aff}↓`}</span>` : ''}<button class="tg-s btn sm ${isOff ? '' : 'g'}" data-act="card-toggle" data-id="${escapeHtml(x.id)}">${isOff ? '꺼짐' : '켜짐'}</button></div>${x.when ? `<div class="when">언제 · ${ph(x.when)}</div>` : ''}<div class="txt">${ph(x.text)}</div>${isMine(x) ? `<div class="acts"><span class="tag">내 카드</span><button class="btn sm g" data-act="card-edit" data-id="${escapeHtml(x.id)}">고치기</button><button class="btn sm g" data-act="card-del" data-id="${escapeHtml(x.id)}">지우기</button></div>` : ''}</div>`; }).join('')}</div>`
+      : `<div class="empty small">${q ? '찾는 카드가 없어요.' : '아직 카드가 없어요. 위 [+ 카드]로 하나 써 보세요.'}</div>`;
     const packHead = c.packEdit && cur?.user
       ? `<div class="newpack" style="margin-bottom:10px"><input class="inp" id="pe-icon" maxlength="2" value="${escapeHtml(cur.icon)}" style="width:52px;text-align:center"><input class="inp" id="pe-name" maxlength="20" value="${escapeHtml(cur.name)}" style="flex:1"><button class="btn sm p" data-act="pack-save">저장</button><button class="btn sm g" data-act="pack-edit-cancel">취소</button></div>`
-      : `<div class="crumb"><button class="back" data-act="cback">‹ 묶음</button><b>${escapeHtml(cur?.icon ?? '')} ${escapeHtml(cur?.name ?? '')}</b><span>· ${packCards(sel, cfg).length}장${cfg.dirPacks.includes(sel) ? '' : ' · 꺼짐'}</span><span class="sp"></span>${cur?.user ? '<button data-act="pack-edit">이름 바꾸기</button><button data-act="pack-del">묶음 지우기</button>' : ''}</div>`;
+      : `<div class="crumb"><button class="back" data-act="cback">‹ 묶음</button><b>${escapeHtml(cur?.icon ?? '')} ${escapeHtml(cur?.name ?? '')}</b><span>· ${packCards(sel, cfg).length}장${cfg.dirPacks.includes(sel) ? '' : ' · 꺼짐'}</span><span class="sp"></span>${cur?.user ? '<button data-act="pack-edit">이름 바꾸기</button><button data-act="pack-del">지우기</button>' : ''}<button class="btn sm p" data-act="card-new">+ 카드</button></div>`;
     const io = !cur?.mine ? '' : `<details class="more"${keepOpen('dir-io', false)}><summary>가져오기 · 내보내기 (JSON)</summary>
         <div class="help" style="margin:6px 0">카드 묶음(JSON)을 붙여 넣고 가져오기를 누르면 이 묶음에 더해져요. 친구와 나눌 땐 아래 글을 복사하세요.</div>
         <textarea class="inp" id="dc-json" rows="5" spellcheck="false">${escapeHtml(JSON.stringify(packCards(sel, cfg).map(({ name, when, text, aff, promise }) => ({ name, when, text, ...(aff != null ? { aff } : {}), ...(promise ? { promise } : {}) })), null, 1))}</textarea>
@@ -3491,15 +3485,32 @@ details.more.danger summary{color:var(--tx2)}
         <section class="mcont">
           ${packHead}
           <div class="search" style="margin-bottom:10px">${icon('search', 18)}<input id="cq" placeholder="카드 찾기" value="${escapeHtml(c.q)}" autocomplete="off"></div>
-          ${composer}${cards}${io}
+          ${cards}${io}
         </section>
+      </div>`;
+  }
+
+  function cardFormSheet() {
+    const cfg = settings, sh = ui.sheet;
+    const editing = sh.edit ? cfg.dirCustom.find(x => x.id === sh.edit) : null;
+    const pk = packList(cfg).find(p => p.id === (editing?.pack ?? sh.pack));
+    return `<div class="sh"><div class="t"><h3>${editing ? '카드 고치기' : '새 카드'}</h3><div class="small muted">${escapeHtml(pk?.icon ?? '')} ${escapeHtml(pk?.name ?? '내 카드')} 묶음 · 장면이 맞으면 Jev가 골라요</div></div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
+      <div class="col" style="gap:8px">
+        <input class="inp" id="cc-name" maxlength="40" placeholder="이름 (예: 말없는 질투)" value="${escapeHtml(editing?.name ?? '')}">
+        <textarea class="inp" id="cc-text" rows="4" maxlength="400" placeholder="연출: {char}가 괜히 말수가 줄어든다. 이유는 말하지 않는다.">${escapeHtml(editing?.text ?? '')}</textarea>
+        <div class="phs"><span class="xs dim">넣기</span><button class="chip" data-act="ph-insert" data-v="{char}">캐릭터</button><button class="chip" data-act="ph-insert" data-v="{user}">나</button><button class="chip" data-act="ph-insert" data-v="{other}">다른 인물</button><span class="xs dim">· 조사는 알아서 맞춰요</span></div>
+        <details class="more"${keepOpen('cc-more', !!(editing?.when || editing?.aff != null))}><summary>언제 쓸지 · 조건 (선택)</summary>
+          <input class="inp" id="cc-when" maxlength="160" placeholder="언제 (예: {other}가 {user} 곁에 있을 때)" value="${escapeHtml(editing?.when ?? '')}" style="margin-top:6px">
+          <input class="inp" id="cc-aff" type="number" inputmode="numeric" min="-10" max="10" placeholder="가까움 조건 (예: 3 = 3 이상일 때만, 비우면 없음)" value="${editing?.aff ?? ''}" style="margin-top:6px">
+        </details>
+        <div class="row" style="justify-content:flex-end;gap:6px;margin-top:4px"><button class="btn g" data-act="sheet-close">취소</button><button class="btn p" data-act="card-save">${editing ? '저장' : '추가'}</button></div>
       </div>`;
   }
 
   // ══ 시트: 인물 · 기억 ══
   function renderSheet() {
     const s = ui.sheet;
-    const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : s.type === 'dircards' ? dirSheet() : s.type === 'memfilter' ? memFilterSheet() : '';
+    const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : s.type === 'dircards' ? dirSheet() : s.type === 'memfilter' ? memFilterSheet() : s.type === 'cardform' ? cardFormSheet() : '';
     return inner;
   }
   const PH = { char: '캐릭터', user: '나', other: '다른 인물' };
@@ -3944,18 +3955,17 @@ details.more.danger summary{color:var(--tx2)}
         const v = (id) => document.getElementById(id)?.value?.trim() ?? '';
         const card = { name: v('cc-name'), when: v('cc-when'), text: v('cc-text'), aff: v('cc-aff') };
         if (!card.name || !card.text) { toast('이름과 연출은 꼭 써 주세요.'); return; }
-        const pack = ui.cards.pack ?? 'custom';
-        const editId = ui.cards.edit;
+        const pack = ui.sheet?.pack ?? ui.cards.pack ?? 'custom';
+        const editId = ui.sheet?.edit ?? null;
         const list = editId ? settings.dirCustom.map(x => (x.id === editId ? { ...x, ...card, id: editId } : x)) : [...settings.dirCustom, { ...card, pack, id: `u${Date.now().toString(36)}` }];
         await patchSettings({ dirCustom: list, dirPacks: [...new Set([...settings.dirPacks, pack])] });
-        ui.cards.edit = null;
+        ui.sheet = null;
         render();
         toast(editId ? '고쳤어요.' : '추가했어요. 장면이 맞으면 Jev가 골라요.');
-        if (!editId) document.getElementById('cc-name')?.focus();
         return;
       }
-      case 'card-edit': ui.cards.edit = el.dataset.id; render(); document.querySelector('.composer')?.scrollIntoView({ block: 'center', behavior: 'smooth' }); return;
-      case 'card-cancel': ui.cards.edit = null; render(); return;
+      case 'card-new': ui.sheet = { type: 'cardform', pack: ui.cards.pack ?? packList()[0].id, edit: null, name: 'new' }; render(); setTimeout(() => document.getElementById('cc-name')?.focus(), 50); return;
+      case 'card-edit': ui.sheet = { type: 'cardform', pack: ui.cards.pack, edit: el.dataset.id, name: el.dataset.id }; render(); return;
       case 'card-del': {
         const c = settings.dirCustom.find(x => x.id === el.dataset.id);
         if (!c || !await confirmDialog(`"${c.name}" 카드를 지울까요?`, '지우기', true)) return;
@@ -3971,8 +3981,9 @@ details.more.danger summary{color:var(--tx2)}
         const id = `up_${Date.now().toString(36)}`;
         await patchSettings({ dirUserPacks: [...(settings.dirUserPacks ?? []), { id, name, icon: document.getElementById('np-icon')?.value?.trim() || '📁' }], dirPacks: [...new Set([...settings.dirPacks, id])] });
         Object.assign(ui.cards, { newPack: false, pack: id, edit: null });
+        ui.sheet = { type: 'cardform', pack: id, edit: null, name: 'new' };
         render();
-        document.getElementById('cc-name')?.focus();
+        setTimeout(() => document.getElementById('cc-name')?.focus(), 50);
         return;
       }
       case 'pack-edit': ui.cards.packEdit = true; render(); return;
@@ -4071,7 +4082,7 @@ details.more.danger summary{color:var(--tx2)}
         try { data = JSON.parse(document.getElementById('dc-json')?.value ?? ''); } catch { toast('JSON 모양이 아니에요.'); return; }
         const incoming = sanitizeDirCards(Array.isArray(data) ? data : data?.cards);
         const have = new Set(settings.dirCustom.map(c => `${c.name}|${c.text}`));
-        const intoPack = ui.view === 'cards' && isUserPack(ui.cards.pack) ? ui.cards.pack : 'custom';
+        const intoPack = ui.view === 'cards' && ui.cards.pack ? ui.cards.pack : 'custom';
         const fresh = incoming.filter(c => !have.has(`${c.name}|${c.text}`)).map((c, i) => ({ ...c, pack: intoPack, id: `u${Date.now().toString(36)}${i}` }));
         if (!fresh.length) { toast('새로 더할 카드가 없어요.'); return; }
         await patchSettings({ dirCustom: [...settings.dirCustom, ...fresh], dirPacks: [...new Set([...settings.dirPacks, intoPack])] });
