@@ -3088,6 +3088,9 @@ svg.graph:active{cursor:grabbing}
 .graph .node .lbl{font-size:14px;font-weight:600;fill:#c6cbe0}
 .graph .node{cursor:pointer}
 .graph .bgnode{opacity:.5}
+.rng{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--tx2);flex-wrap:wrap}
+.rng input{width:150px;accent-color:var(--ac)}
+.rng b{min-width:2.5em;font-variant-numeric:tabular-nums;color:var(--tx)}
 .legend{display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center;padding:0 12px 12px 16px;font-size:12px;color:var(--tx3)}
 .legend i{display:inline-block;width:18px;height:3px;border-radius:3px;vertical-align:middle;margin-right:5px}
 .gtools{display:flex;gap:6px;margin-left:auto}
@@ -3769,7 +3772,7 @@ details.more.danger summary{color:var(--tx2)}
     const q = (ui.nodesQ ?? '').trim();
     let pick = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr));
     if (q) { const hit = new Set(pick.filter(nd => nd.label.includes(q)).map(nd => nd.label)); for (const h of [...hit]) for (const [w] of [...(gr.edges.get(h) ?? new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10)) hit.add(w); pick = [...hit].map(w => gr.nodes.get(w)).filter(Boolean); }
-    pick = pick.slice(0, ui.nodesMany ? 80 : 30);
+    pick = pick.slice(0, ui.nodesN ?? 30);
     if (!pick.length) return '<div class="empty small">그릴 마디가 없어요.</div>';
     const names = new Set(pick.map(nd => nd.label));
     const max = Math.max(1, ...pick.map(nd => nd.sents.length));
@@ -3813,7 +3816,7 @@ details.more.danger summary{color:var(--tx2)}
     const head = `${fill}<div class="kpis" style="margin-bottom:14px">${kpiBox(all.length, '마디')}${kpiBox(people, '인물')}${kpiBox(words, '낱말')}${kpiBox(common, '배경 낱말')}</div>
       <div class="seg" style="margin-bottom:12px"><button class="${mode === 'map' ? 'on' : ''}" data-act="nodes-mode" data-v="map">그림</button><button class="${mode === 'list' ? 'on' : ''}" data-act="nodes-mode" data-v="list">목록</button></div>`;
     if (mode === 'map') return `${head}<section class="card graphcard">
-        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2><button class="btn sm g" data-act="nodes-many">${ui.nodesMany ? '자주 나온 30개만' : '80개까지 보기'}</button><button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
+        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2>${(() => { const avail = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr)).length; const mx = Math.max(10, Math.min(400, avail)); const cur = Math.min(mx, ui.nodesN ?? 30); return `<label class="rng">보일 마디 <input type="range" id="nn" min="10" max="${mx}" step="1" value="${cur}" aria-label="보일 마디 수"><b id="nn-v">${cur}</b><span class="dim">/ ${avail > 400 ? '400 (많아서 400까지)' : avail}</span></label>`; })()}<button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
         <div style="padding:0 16px"><div class="search" style="margin:10px 0 4px">${icon('search', 18)}<input id="nq" placeholder="마디 찾기 (그 마디와 이웃만 그려요)" value="${escapeHtml(ui.nodesQ ?? '')}" autocomplete="off"></div></div>
         ${nodeMapSvg(gr, list)}
         <div class="legend"><span><i style="background:var(--ac)"></i>낱말 (안 숫자 = 붙은 기억)</span><span>동그라미 = 인물</span><span>선 굵기 = 같은 문장에 나온 횟수</span><div class="gtools"><button class="iconbtn" data-act="gzoom" data-g="ngraph" data-f="1.25" aria-label="확대">${icon('plus', 18)}</button><button class="iconbtn" data-act="gzoom" data-g="ngraph" data-f="0.8" aria-label="축소">${icon('minus', 18)}</button><button class="iconbtn" data-act="greset" data-g="ngraph" aria-label="처음 위치">${icon('refresh', 18)}</button></div></div>
@@ -4367,6 +4370,7 @@ details.more.danger summary{color:var(--tx2)}
     globalThis.addEventListener?.('resize', () => { const w = wide(); if (w !== lastWide) { lastWide = w; if (ui.view === 'people') softRender(); } });
     document.body.addEventListener('toggle', (e) => { const k = e.target?.dataset?.keep; if (k) ui.keepOpen.set(k, e.target.open); }, true);
     document.body.addEventListener('input', (e) => {
+      if (e.target.id === 'nn') { const v = document.getElementById('nn-v'); if (v) v.textContent = e.target.value; return; }
       if (e.target.id === 'cq') { ui.cards.q = e.target.value; clearTimeout(ui.cqTimer); ui.cqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('cq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'nq') { ui.nodesQ = e.target.value; clearTimeout(ui.nqTimer); ui.nqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('nq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'pq') { ui.peopleQ = e.target.value; clearTimeout(ui.pqTimer); ui.pqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('pq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
@@ -4400,6 +4404,7 @@ details.more.danger summary{color:var(--tx2)}
   }
   async function onChange(e) {
     const el = e.target;
+    if (el.id === 'nn') { ui.nodesN = Number(el.value); ui.nlayout = null; ui.ngraph = { x: 0, y: 0, k: 1 }; render(); return; }
     if (el.id === 'ja-imp' && el.files?.[0]) {
       try {
         const data = JSON.parse(await el.files[0].text());
@@ -4572,7 +4577,6 @@ details.more.danger summary{color:var(--tx2)}
       case 'gzoom': { const f = Number(el.dataset.f); const g = (ui[el.dataset.g || 'graph'] ??= { x: 0, y: 0, k: 1 }); const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
       case 'greset': if (el.dataset.g === 'ngraph') { ui.ngraph = { x: 0, y: 0, k: 1 }; ui.nlayout = null; } else { ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; } render(); return;
       case 'nodes-mode': ui.nodesMode = el.dataset.v; render(); return;
-      case 'nodes-many': ui.nodesMany = !ui.nodesMany; ui.nlayout = null; ui.ngraph = { x: 0, y: 0, k: 1 }; render(); return;
       case 'nodes-bg': ui.nodesBg = !ui.nodesBg; ui.nlayout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
       case 'dircards': ui.sheet = null; ui.view = 'cards'; render(); document.getElementById('sc').scrollTop = 0; return;
