@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, skipStatus: true,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -198,6 +198,7 @@
       cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      skipStatus: s.skipStatus !== false,
       tags: s.tags !== false,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
@@ -981,7 +982,7 @@
     // 방금 흐름: 창 바로 앞 메시지부터. 칸 줄이 있으면 칸 줄, 아직 안 만들었으면 원문 (보낸 뒤에 만들어서 막 밀려난 건 아직 없다)
     let tail = 0;
     for (let mi = limitMi - 1; mi >= 0 && tail < cfg.tailTokens; mi--) {
-      const list = factStore.has(timeline[mi].key) ? factsOfMessage(mi).slice().reverse().map(f => ['f', f]) : msgChunkIds(mi).slice().reverse().map(id => ['c', chunks[id]]);
+      const list = factStore.has(timeline[mi].key) ? factsOfMessage(mi).slice().reverse().map(f => ['f', f]) : msgChunkIds(mi).slice().reverse().map(id => ['c', cleanChunk(chunks[id])]).filter(([, c]) => c);
       let stop = false;
       for (const [t, u] of list) {
         const k = t === 'f' ? factCost(u) : rawCost(u);
@@ -2143,6 +2144,17 @@
   const OLD_FACT_SENTS = 24;    // 예전 상한. v 표시가 없는 메시지는 여기까지만 만들어져 있다
   const FACT_V = 2;
   const isOldList = (list) => !list?.some(e => e.v >= FACT_V);
+  // 상태창 모양 줄: [Status | Date: … | Money: …] · [Own Monster 1 | Name: … | Level: …] · |TODO: …|
+  //  조각으로 나눌 때 줄이 공백으로 이어지므로 "[…|…|…] […|…|…]"처럼 여러 개가 붙은 것도 상태창 한 줄로 본다
+  const STATUS_GROUP = /\[[^\]\n]*\|[^\]\n]*\|[^\]\n]*\]/g;
+  const STATUS_LINE = /^\s*(?:\[[^\]\n]*\|[^\]\n]*\|[^\]\n]*\]\s*)+$|^\s*\|[^\n]*\|\s*$/;
+  const isStatusLine = (t) => settings.skipStatus !== false && STATUS_LINE.test(String(t ?? ''));
+  /** 원문 조각에서 상태창 줄을 뺀 것 (남는 게 없으면 null) */
+  function cleanChunk(c) {
+    if (!c || settings.skipStatus === false) return c;
+    const text = String(c.text).replace(STATUS_GROUP, ' ').split('\n').filter(l => !STATUS_LINE.test(l)).join('\n').replace(/[ \t]{2,}/g, ' ').trim();
+    return text.replace(/[^\p{L}\p{N}]/gu, '').length >= 8 ? (text === c.text ? c : { ...c, text }) : null;
+  }
   const FACT_PER_CALL = 40;    // Jev 한 번에 보여 줄 문장 수
   let factStore = new Map();   // 메시지 지문 → [{ pos, si, k, s: [8칸], vec, p }]  (빈 배열 = 정리했지만 남길 게 없음)
   let factDirty = new Set();
@@ -2199,6 +2211,7 @@
         if (f.pos < 0) continue;
         const c = chunks[ids[f.pos]];
         const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
+        if (isStatusLine(sent)) continue;
         facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
       }
     }
@@ -2265,7 +2278,8 @@
         const clean = unquote(s);
         if (clean.replace(/[\s\p{P}]/gu, '').length < 4) return;   // "응.", "…" 같은 건 바로 건너뜀
         if (/[?？]\s*$/u.test(clean)) return;                         // 질문은 기억이 아니다 (비슷한 질문이 후보 자리를 뺏는다)
-        if (seen++ < oldDone.get(mi)) { n++; return; }               // 예전에 이미 만든 앞부분
+        if (seen++ < oldDone.get(mi)) { n++; return; }
+        if (isStatusLine(clean)) return;                              // 상태창 줄은 기억이 아니다               // 예전에 이미 만든 앞부분
         const words = clean.split(/\s+/).filter(Boolean).slice(0, 24);
         jobs.push({ mi, pos, si, s: clean, words, rule: words.map(ruleRole) });
         n++;
@@ -2382,7 +2396,9 @@
    *  wantUpd: 질문이 "지금 · 현재 · 아직"을 물으면 바뀜 표시가 있는 책을 먼저
    */
   function retrieveBooks(qvecs, query, exclude, nMsg, cap, limitMi, wantUpd = false, names = []) {
-    const pool = facts.filter(f => f.mi < limitMi);
+    const newest = new Map();
+    for (const f of facts) if (f.mi < limitMi && (newest.get(f.sent) ?? -1) < f.mi) newest.set(f.sent, f.mi);
+    const pool = facts.filter(f => f.mi < limitMi && newest.get(f.sent) === f.mi);
     if (!pool.length) return [];
     // 뜻 갈래: 검색어마다 따로 순위 (첫 번째 = 내 메시지가 조금 더 무겁다). 한 덩어리로 섞으면 여러 이야기가 든 장면에서 다 애매해진다
     const semLists = qvecs.map((q, qi) => [qi === 0 ? 1 : 0.8, pool.filter(f => f.vec).map(f => [f.id, simSigns(q, f.vec)]).sort((x, y) => y[1] - x[1]).slice(0, 120)]);
@@ -2407,7 +2423,8 @@
     const picked = [...books.values()].filter(b => !exclude.has(b.mi)).sort((a, b) => b.score - a.score).slice(0, nMsg);
     const out = [];
     for (const b of picked) {
-      const lines = factsOfMessage(b.mi);
+      // 같은 문장이 더 최근 메시지에도 있으면 이 메시지에서는 빼고 (딸려 들어와 자리를 먹지 않게)
+      const lines = factsOfMessage(b.mi).filter(f => newest.get(f.sent) === f.mi);
       const keep = lines.length <= 12 ? lines : lines.slice().sort((x, y) => (fs.get(y.id) ?? 0) - (fs.get(x.id) ?? 0)).slice(0, 12).sort((x, y) => x.id - y.id);
       for (const f of keep) { if (out.length >= cap) break; out.push(f); }
       if (out.length >= cap) break;
@@ -2943,7 +2960,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 묶음 이름 옆 [+ 카드]로 어느 묶음에든(공포 같은 기본 묶음도) 내 카드를 더해요. 감독 · 얼마나 자주는 한 줄로. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그는 조사가 붙은 단어(바다를 · 흙먼지가)만 명사로 봐요. (happy) 같은 괄호 속 말 · 영어 · 동사 꼴은 빼고, 예전에 쌓인 이상한 태그도 열 때 정리해요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['상태창 줄([상태 | 날짜 | 돈 …])은 기억 문장 · "방금 흐름"에서 빼요 (설정 › 기억 넣기 › 직접 조절에서 끌 수 있어요). 같은 문장이 여러 메시지에 있으면 가장 최근 것만 써요. 긴 답장 시험에서 필요한 과거가 3/15 → 12/15로 들어왔어요.', '연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 묶음 이름 옆 [+ 카드]로 어느 묶음에든(공포 같은 기본 묶음도) 내 카드를 더해요. 감독 · 얼마나 자주는 한 줄로. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그는 조사가 붙은 단어(바다를 · 흙먼지가)만 명사로 봐요. (happy) 같은 괄호 속 말 · 영어 · 동사 꼴은 빼고, 예전에 쌓인 이상한 태그도 열 때 정리해요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -3683,6 +3700,7 @@ details.more.danger summary{color:var(--tx2)}
         ${presetSeg(cur)}
         <details class="more"${keepOpen('adv-mem', cur === 'custom')}><summary>직접 조절</summary>
           <div class="field inline"><div><label>기억 예산 (토큰)</label><div class="help">한 번에 넣는 기억의 최대 크기. 0이면 안 넣어요.</div></div>${num('budget', 0, 20000)}</div>
+          <div class="field inline"><div><label>상태창 줄은 기억에서 빼기</label><div class="help">[상태 | 날짜 | 돈 …] 같은 줄은 기억 문장으로 안 만들고 "방금 흐름"에도 안 넣어요. 현재 상태창은 최근 대화에 이미 있어서요.</div></div>${sw('skipStatus', d.skipStatus !== false)}</div>
           <div class="field inline"><div><label>장면 길이 (글자)</label><div class="help">기억을 고를 때 최근 대화를 메시지 통째로 이만큼까지 보여 줘요. 답장이 길면 늘리세요. 길수록 정확하지만 Jev 비용이 조금 늘어요.</div></div>${num('sceneChars', 1000, 30000)}</div>
           <div class="field inline"><div><label>Jev 후보 수</label><div class="help">많으면 덜 놓치지만 Jev 비용이 늘어요.</div></div>${num('candidates', 4, 80)}</div>
           <div class="field inline"><div><label>이웃 칸 줄</label><div class="help">고른 기억과 같은 메시지의 앞뒤 문장을 몇 개씩 같이 넣을지.</div></div>${num('neighbor', 0, 3)}</div>
