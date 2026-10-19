@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.1
+//@display-name 🏛️JevArchive 1.0.2
 //@api 3.0
-//@version 1.0.1
+//@version 1.0.2
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -983,8 +983,22 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       for (const [k, c] of tailRaw.entries()) tailAsk[`tm${k}`] = { type: 'noul', instructions: `Is this interface text rather than the story itself — a menu of choices or suggested next actions for the user, a status window or stat sheet, a to-do list, or a dice roll? «${clip(c.text, 400)}»` };
       // 모으기 질문인지 (같은 호출에 질문 하나)
       if (cfg.story && cfg.overview !== false && latest) tailAsk.ov = { type: 'noul', instructions: `Does the user's latest message ask to list, count, or look back over many things from the whole story so far — for example everyone they have met, all promises, all relationships, or how many times something happened? «${clip(latest, 300)}»` };
-      const r1 = await timed(tr, 'Jev 채점', () => judge([...first, ...gPicks], state, true, { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
+      // 실험: Voyage 리랭커로 최종 심사 (judge = Jev 점수 대신, hybrid = 둘의 평균). 벤치에서만 __JA_EXP로 켠다
+      const allC = [...first, ...gPicks];
+      const RR = (globalThis.__JA_EXP ?? {}).rerank;
+      let rrScores = null;
+      if (RR && allC.length) {
+        const rq = `Find earlier story records that would help continue this roleplay scene naturally.\nRecent scene: ${ctx.slice(-800)}\nLatest message: ${latest}`;
+        try { rrScores = await timed(tr, '리랭크', () => voyageRerank(rq, allC.map(c => c.text)), () => `후보 ${allC.length}개`); } catch (error) { setError('리랭크', error); }
+      }
+      const r1 = await timed(tr, 'Jev 채점', () => judge(RR === 'judge' && rrScores ? [] : allC, state, !(RR === 'judge' && rrScores), { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
       ({ levels, need } = r1);
+      if (rrScores) {
+        const E = globalThis.__JA_EXP ?? {};
+        const lv = (s) => Math.min(3, (s / (E.rrMin ?? 0.5)) * KEEP_LEVEL);   // 리랭커 점수 rrMin = 문턱(1.5)
+        if (RR === 'judge') levels = new Map(allC.map((c, i) => [c.id, lv(rrScores[i])]));
+        else if (RR === 'hybrid') allC.forEach((c, i) => levels.set(c.id, ((levels.get(c.id) ?? 0) + lv(rrScores[i])) / 2));
+      }
       tailRaw.forEach((c, k) => { if (Number(r1.answers?.[`tm${k}`]?.noul ?? 0) >= 0.6) tailSkip.add(c.id); });
       overview = Number(r1.answers?.ov?.noul ?? 0) >= 0.6;
       if (dir) {
@@ -1657,7 +1671,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     const ftodo = factBacklog().slice(-8).reverse();             // 칸 줄은 최근 것부터 (지금 대화와 가까운 기억이 먼저)
     const todo = settings.story ? storyBacklog().slice(0, 8) : []; // 이야기 정리는 순서대로 (관계 · 약속이 시간 순서라)
     const ttodo = tagBacklog();
-    if (!ftodo.length && !todo.length && !ttodo.length) return;
+    const ntodo = nodeBacklog().slice(-40);                       // 예전 기억 마디 채우기 (최근 것부터, 보낼 때마다 40문장)
+    if (!ftodo.length && !todo.length && !ttodo.length && !ntodo.length) return;
     const key = chatKey;
     const tr = beginTrace('story');
     storyJob = (async () => {
@@ -1667,6 +1682,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       else { await facts1(); await story1(); }
       const tl = chatKey === key ? tagBacklog() : [];
       if (tl.length) await timed(tr, '칸 나누기', () => tagLater(tl), `문장 ${tl.length}개`);
+      if (ntodo.length && chatKey === key) await timed(tr, '예전 기억 마디', () => fillNodes(ntodo), `문장 ${ntodo.length}개`);
     })()
       .catch(error => setError('이야기 분석', error))
       .finally(() => { endTrace(tr); storyJob = null; if (chatKey === key) softRender(); });
@@ -1702,6 +1718,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           else await Promise.all([factLanes(par - 1), storyLane()]);
         }, () => `${done}/${total}`);
       } finally { endTrace(tr); }
+      if (chatKey === room && nodeBacklog().length) { onProgress?.(total, total, '마디'); await fillNodesAll(); }
       await flushStory();
       await flushFacts();
       return new Set([...ftodo, ...todo]).size;
@@ -2331,7 +2348,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
         const c = chunks[ids[f.pos]];
         const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
         if (isStatusLine(sent)) continue;
-        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')), nd: f.n ?? [] });
+        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')), nd: f.n ?? [], entry: f });
       }
     }
   }
@@ -2423,19 +2440,17 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       });
       // ② 마디 (뉴런): 꺼낼 만한 문장(1.5점 이상)만, 따로 한 번 더 묻는다.
       //  ①에 같이 얹으면 종류 · 점수 판단이 흔들렸다 (남는 문장 7% 줄고 기존 시험 점수 하락). 서술 문장은 마디가 안 된다
-      const nj = settings.graph !== false ? part.filter(j => FACT_K[j.kind] && j.w >= WORTH_LOW && (j.cands = nodeCands(j.s)).length) : [];
+      const nEl = settings.graph !== false ? part.filter(j => FACT_K[j.kind] && j.w >= WORTH_LOW) : [];
+      for (const j of nEl) { j.cands = nodeCands(j.s); if (!j.cands.length) j.nodes = []; }
+      const nj = nEl.filter(j => j.cands.length);
       if (nj.length) {
         const q2 = {};
         nj.forEach((j, k) => { q2[`nd${k}`] = { type: 'choice', instructions: `K${k}`, criteria: Object.fromEntries([...j.cands.map((w, i) => [`w${i}`, w]), ['none', 'none of these']]) }; });
-        const state2 = `[WORDS] For each Kn, pick the word in Sn that names something worth remembering later — a thing, event, place, plan, habit, or topic. Pick none for common or vague words.\n${nj.map((j, k) => `S${k}: ${j.s}`).join('\n')}`;
+        const state2 = `${WORDS_GUIDE}\n${nj.map((j, k) => `S${k}: ${j.s}`).join('\n')}`;
         try {
           const a2 = await callJev(state2, q2);
           if (chatKey !== room) return 0;
-          nj.forEach((j, k) => {
-            const na = a2[`nd${k}`];
-            const np = na?.probabilities && Object.keys(na.probabilities).length ? na.probabilities : (na?.choice ? { [na.choice]: Number(na.confidence ?? 1) } : {});
-            j.nodes = Object.entries(np).filter(([key, v]) => /^w\d+$/.test(key) && v >= 0.2).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([key]) => j.cands[Number(key.slice(1))]).filter(Boolean);
-          });
+          nj.forEach((j, k) => { j.nodes = pickNodes(a2[`nd${k}`], j.cands); });
         } catch (error) { setError('마디 만들기', error); }
       }
       // 단어 칸은 여기서 묻지 않는다 (규칙으로 정해지는 것만). 나머지는 그 기억이 쓰일 때 뒤에서 (tagLater)
@@ -2452,7 +2467,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
         if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
         if (!slots.where.length && clock.place) slots.where.push(clock.place);
         const s = ROLE_ORDER.map(r => slots[r].join(' '));
-        made.get(j.mi).push({ v: FACT_V, pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), ...(j.nodes?.length ? { n: j.nodes } : {}), _sent: j.s });
+        made.get(j.mi).push({ v: FACT_V, pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), ...(j.nodes ? { n: j.nodes } : {}), _sent: j.s });
       });
     }
     // 칸 줄 임베딩 (찾기 열쇠)
@@ -2591,6 +2606,56 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   // ══ 마디 지도 (뉴런처럼) ══
   //  마디 = 인물(이름) + Jev가 저장할 때 고른 낱말. 문장이 마디에 매달리고, 같은 문장에 나온 마디끼리 줄로 이어진다.
   //  보낼 때: 장면과 가까운 마디를 추려 Jev가 "켤 마디"를 고르고 → 불이 이웃으로 퍼지고 → 켜진 마디의 문장을 모아 심사에 보탠다.
+  const WORDS_GUIDE = '[WORDS] For each Kn, pick the word in Sn that names something worth remembering later — a thing, event, place, plan, habit, or topic. Pick none for common or vague words.';
+  /** Jev 답에서 마디 낱말 고르기 (확률 0.2 넘는 것 3개까지) */
+  function pickNodes(na, cands) {
+    const np = na?.probabilities && Object.keys(na.probabilities).length ? na.probabilities : (na?.choice ? { [na.choice]: Number(na.confidence ?? 1) } : {});
+    return Object.entries(np).filter(([k, v]) => /^w\d+$/.test(k) && v >= 0.2).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k]) => cands[Number(k.slice(1))]).filter(Boolean);
+  }
+  /** 마디가 아직 없는 예전 기억 (이전 버전에서 저장된 것). 꺼낼 만한 문장(1.5점 이상)만 */
+  function nodeBacklog() {
+    if (settings.graph === false) return [];
+    return facts.filter(f => f.entry && !('n' in f.entry) && FACT_K[f.k] && worthOf(f) >= WORTH_LOW);
+  }
+  /** 예전 기억에 마디 채우기: 문장은 다시 만들지 않고 "기억할 낱말"만 묻는다 (Jev 한 번에 40문장) */
+  async function fillNodes(list) {
+    const room = chatKey;
+    const jobs = list.map(f => ({ f, cands: nodeCands(f.sent) }));
+    for (const j of jobs) if (!j.cands.length) { j.f.entry.n = []; j.f.nd = []; }
+    const ask = jobs.filter(j => j.cands.length);
+    for (let i = 0; i < ask.length; i += 40) {
+      const part = ask.slice(i, i + 40);
+      const q = {};
+      part.forEach((j, k) => { q[`nd${k}`] = { type: 'choice', instructions: `K${k}`, criteria: Object.fromEntries([...j.cands.map((w, x) => [`w${x}`, w]), ['none', 'none of these']]) }; });
+      const a = await callJev(`${WORDS_GUIDE}\n${part.map((j, k) => `S${k}: ${j.f.sent}`).join('\n')}`, q);
+      if (chatKey !== room) return 0;
+      part.forEach((j, k) => { const n = pickNodes(a[`nd${k}`], j.cands); j.f.entry.n = n; j.f.nd = n; });
+    }
+    for (const j of jobs) factDirty.add(shardOf(j.f.key));
+    graph.key = '';
+    saveFacts();
+    return jobs.length;
+  }
+  /** 전부 채우기 (도구 · 마디 탭 버튼). 동시 요청 설정만큼 나눠서 */
+  let nodeFillAll = null;
+  function fillNodesAll(onProgress) {
+    if (nodeFillAll) return nodeFillAll;
+    const run = nodeFillAll = (async () => {
+      const todo = nodeBacklog();
+      const room = chatKey;
+      const batches = [];
+      for (let i = 0; i < todo.length; i += 40) batches.push(todo.slice(i, i + 40));
+      let next = 0, done = 0;
+      const lanes = Math.max(1, Math.min(settings.jevParallel ?? 2, batches.length));
+      await Promise.all(Array.from({ length: lanes }, async () => { while (next < batches.length && chatKey === room) { const b = batches[next++]; await fillNodes(b); done += b.length; onProgress?.(done, todo.length); } }));
+      await flushFacts();
+      return todo.length;
+    })().finally(() => { nodeFillAll = null; });
+    return run;
+  }
+  /** 서술 단골 낱말 (메시지 8% 넘게): 켜지지 않는다 */
+  // 짧은 채팅에서는 몇 번만 나와도 8%가 넘으니, 적어도 메시지 6개에는 나와야 배경으로 본다
+  const nodeIsCommon = (n, g0 = buildGraph()) => n.kind === 'word' && n.msgs.size >= 6 && n.msgs.size / Math.max(1, g0.msgTotal) > ((globalThis.__JA_EXP ?? {}).gCommon ?? 0.08);
   const graph = { key: '', nodes: new Map(), edges: new Map() };
   const nodeVec = new Map();      // 낱말 → 부호 벡터 (이름만 임베딩)
   let nodeVecProf = '';
@@ -2630,6 +2695,17 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     }
     return out;
   }
+  /** Voyage 리랭커 (임베딩이 Voyage일 때 같은 키로). 문서 순서대로 0~1 점수 */
+  async function voyageRerank(query, docs) {
+    const e = embedConfig(settings);
+    if (!/voyageai\.com/.test(e.endpoint ?? '')) throw new Error('리랭커는 Voyage 임베딩일 때만 돼요.');
+    const url = e.endpoint.replace(/embeddings\/?$/, 'rerank');
+    const body = JSON.stringify({ query: wellFormed(clip(query, 4000)), documents: docs.map(d => wellFormed(clip(d, 1000))), model: (globalThis.__JA_EXP ?? {}).rrModel ?? 'rerank-2.5-lite', truncation: true });
+    const data = await fetchJson(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${e.key}` }, body }, 20000, '리랭크');
+    const out = new Array(docs.length).fill(0);
+    for (const d of data?.data ?? []) out[d.index] = Number(d.relevance_score ?? 0);
+    return out;
+  }
   /** 짝 잃은 서로게이트(이모지 반쪽)를 고친다 */
   function wellFormed(s) { s = String(s ?? ''); return s.toWellFormed ? s.toWellFormed() : s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�'); }
   function wellFormedDeep(v) { if (typeof v === 'string') return wellFormed(v); if (Array.isArray(v)) return v.map(wellFormedDeep); if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, wellFormedDeep(x)])); return v; }
@@ -2658,7 +2734,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     const EXP = globalThis.__JA_EXP ?? {};
     const g = buildGraph();
     // 익숙해짐: 메시지 8% 넘게 나오는 낱말은 배경(서술 단골) → 켜지지도 퍼지지도 않는다. 사람은 빼지 않는다
-    const common = (n) => n.kind === 'word' && n.msgs.size / Math.max(1, g.msgTotal) > (EXP.gCommon ?? 0.08);
+    const common = (n) => nodeIsCommon(n, g);
     const live = [...g.nodes.values()].filter(n => !common(n) && n.sents.some(id => facts[id]?.mi < limitMi));
     const liveSet = new Set(live.map(n => n.label));
     if (!live.length) return { picks: [], info: null };
@@ -2846,7 +2922,7 @@ a{color:var(--ac)}
 .iconbtn:hover{background:var(--s2);color:var(--tx)}
 .scroll{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:16px 16px calc(96px + var(--safe))}
 .wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:5;display:grid;grid-template-columns:repeat(6,1fr);padding:6px 6px calc(6px + var(--safe));background:rgba(13,16,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:5;display:grid;grid-template-columns:repeat(7,1fr);padding:6px 6px calc(6px + var(--safe));background:rgba(13,16,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
 .tab{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;border:0;background:none;color:var(--tx3);font-size:11px;border-radius:12px;min-height:52px;justify-content:center;position:relative}
 .tab.on{color:var(--tx)}
 .tab.on svg{color:var(--ac)}
@@ -3011,6 +3087,7 @@ svg.graph:active{cursor:grabbing}
 .graph .node text{font-size:15px;font-weight:700;pointer-events:none}
 .graph .node .lbl{font-size:14px;font-weight:600;fill:#c6cbe0}
 .graph .node{cursor:pointer}
+.graph .bgnode{opacity:.5}
 .legend{display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center;padding:0 12px 12px 16px;font-size:12px;color:var(--tx3)}
 .legend i{display:inline-block;width:18px;height:3px;border-radius:3px;vertical-align:middle;margin-right:5px}
 .gtools{display:flex;gap:6px;margin-left:auto}
@@ -3061,6 +3138,15 @@ svg.graph:active{cursor:grabbing}
 .pk.on{background:var(--acbg);border-color:var(--acln);color:var(--tx)}
 .pk.dim{opacity:.55}
 .hscroll{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.nchips{display:flex;flex-wrap:wrap;gap:8px}
+.nchip{display:inline-flex;align-items:center;gap:6px;padding:calc(5px * var(--z,1)) calc(11px * var(--z,1));border-radius:var(--r3);border:1px solid var(--line2);background:var(--s2);color:var(--tx);font-size:calc(13px * var(--z,1));max-width:100%}
+.nchip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nchip b{font-size:11px;font-weight:600;color:var(--tx3);font-variant-numeric:tabular-nums}
+.nchip.person{border-color:hsl(var(--h) 55% 40%);background:hsl(var(--h) 35% 16%)}
+.nchip.word{border-color:rgba(140,158,255,.35)}
+.nchip.bg{opacity:.45;border-style:dashed}
+.nchip:hover{border-color:var(--ac)}
+.av.xs{width:18px;height:18px;font-size:10px}
 .hscroll::-webkit-scrollbar{display:none}
 .hscroll .pk{flex:none}
 .dcard{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
@@ -3215,6 +3301,7 @@ details.more.danger summary{color:var(--tx2)}
     film: 'M4 4h16v16H4zM8 4v16M16 4v16M4 9h4M16 9h4M4 15h4M16 15h4',
     clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2',
     news: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+    node: 'M6 8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM18 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM12 21a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM8.4 6.2l7.2 1.3M7.2 7.9l3.8 8.4M16.9 9.8l-3.8 6.4',
   };
   const icon = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[n]}"/></svg>`;
   const hasBatchim = (w) => { const c = String(w ?? '').trim().slice(-1).charCodeAt(0); return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 !== 0; };
@@ -3223,10 +3310,11 @@ details.more.danger summary{color:var(--tx2)}
   const avatar = (name, cls = '') => `<span class="av ${cls}" style="--h:${hueOf(name)}">${escapeHtml(String(name ?? '?').trim().slice(0, 1) || '?')}</span>`;
   const kpiBox = (v, label) => `<div class="kpi"><b>${v}</b><span>${label}</span></div>`;
   const secs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}초` : `${ms}ms`);
-  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['cards', '연출 카드', 'film'], ['news', '업데이트', 'news'], ['settings', '설정', 'settings']];
-  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
+  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['nodes', '마디', 'node'], ['cards', '연출 카드', 'film'], ['news', '업데이트', 'news'], ['settings', '설정', 'settings']];
+  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
     ['1.0.1', '2026-10-19', ['기억 마디 (뉴런처럼): 저장할 때 Jev가 문장마다 기억할 낱말(물건 · 사건 · 장소 …)을 골라 인물과 함께 마디로 잇고, 보낼 때 장면에 맞는 마디를 켜서 연결된 기억을 같이 꺼내요. 메시지에 글자로 나온 마디는 바로 켜지고, 서술에 너무 자주 나오는 낱말은 배경으로 보고 안 켜요.', '처음 보는 일상 시험(질문 없이 채팅만 28턴, 블라인드 채점): 필요한 기억 19.5 → 26.5/28, 해로운 기억 1 → 0. 기존 시험 38/38 · 54/55 그대로.', '고침: 긴 세션에서 가끔 검색어 하나가 빈 값이 되어 그 턴 회상이 실패하던 문제, 이모지가 반으로 잘려 Jev가 400 오류를 내던 문제.', '"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
   ];
@@ -3265,7 +3353,7 @@ details.more.danger summary{color:var(--tx2)}
     const top = sc.scrollTop;
     const xs = [...document.querySelectorAll('[data-x]')].map(el => [el.dataset.x, el.scrollLeft, el]);
     const st = storageStats();
-    const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, cards: renderCards, news: renderNews, settings: renderSettings }[ui.view] ?? renderNow)(st);
+    const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, nodes: renderNodes, cards: renderCards, news: renderNews, settings: renderSettings }[ui.view] ?? renderNow)(st);
     const nThreads = openCount(false) + openCount(true);
     const badge = { promises: nThreads > 0, now: !!statusAlerts(st).length, people: settings.story && fixItems().length > 0 };
     const label = escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '));
@@ -3447,17 +3535,28 @@ details.more.danger summary{color:var(--tx2)}
   }
 
   // ══ 인물 · 관계도 ══
+  /** 관계도에 그릴 사람: 기본은 자주 나온 14명(캐릭터 · 나는 늘), 모두 보기면 60명까지, 중심 인물이면 그 사람과 이어진 사람만 */
   function graphData() {
-    const ppl = personList().filter(p => !p.hidden && p.count > 0).sort((a, b) => b.count - a.count).slice(0, 36);
+    const live = personList().filter(p => !p.hidden && p.count > 0).sort((a, b) => b.count - a.count);
+    let ppl;
+    if (ui.gFocus && story.people[ui.gFocus]) {
+      const nb = pairsOf(ui.gFocus).filter(e => e.co > 0).sort((a, b) => b.co - a.co).slice(0, 18).map(e => (e.a === ui.gFocus ? e.b : e.a));
+      ppl = [story.people[ui.gFocus], ...nb.map(n => story.people[n]).filter(p => p && !p.hidden)];
+    } else {
+      const core = live.filter(p => p.kind === 'char' || p.kind === 'persona');
+      ppl = [...new Set([...core, ...live.slice(0, ui.gAll ? 60 : 14)])];
+    }
     const names = new Set(ppl.map(p => p.name));
-    const edges = Object.values(story.pairs).filter(e => names.has(e.a) && names.has(e.b) && e.co > 0);
-    return { ppl, edges };
+    // 선은 뜻 있는 것만: 두 번 넘게 같이 나왔거나, 관계 종류가 있거나, 온도가 기운 것 (중심 보기에선 그 사람 선은 다)
+    const edges = Object.values(story.pairs).filter(e => names.has(e.a) && names.has(e.b) && e.co > 0 && (e.co >= 2 || e.type || Math.abs(e.aff) >= 2 || (ui.gFocus && (e.a === ui.gFocus || e.b === ui.gFocus))));
+    return { ppl, edges, total: live.length };
   }
   const wide = () => { try { return !!globalThis.matchMedia?.('(min-width:900px)').matches; } catch { return true; } };
-  const graphBox = () => (wide() ? { W: 640, H: 440 } : { W: 380, H: 460 });
+  // 사람이 많으면 판을 넓힌다 (14명 넘으면 √ 비율로). 확대 · 끌기로 본다
+  const graphBox = (n = 14) => { const f = Math.max(1, Math.sqrt(n / 14)); return wide() ? { W: Math.round(640 * f), H: Math.round(440 * f) } : { W: Math.round(380 * f), H: Math.round(460 * f) }; };
   /** 힘 배치: 서로 밀고, 관계선은 당긴다. 결과는 그래프 모양이 바뀔 때만 다시 계산 */
   function layoutGraph(ppl, edges) {
-    const { W, H } = graphBox(), n = ppl.length;
+    const n = ppl.length, { W, H } = graphBox(n);
     const sig = `${W}x${H}|` + ppl.map(p => p.name).join(',') + '|' + edges.map(e => `${e.a}${e.b}`).join(',');
     if (ui.layout && ui.layoutSig === sig) return ui.layout;
     const prev = ui.layout ?? {};
@@ -3466,7 +3565,7 @@ details.more.danger summary{color:var(--tx2)}
       const a = (hueOf(p.name) / 360) * Math.PI * 2;
       pos[p.name] = prev[p.name] ? { ...prev[p.name] } : { x: W / 2 + Math.cos(a) * W * 0.22 * (0.6 + (i % 3) * 0.2), y: H / 2 + Math.sin(a) * H * 0.22 * (0.6 + (i % 3) * 0.2) };
     });
-    const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.55;
+    const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.7;
     let temp = W / 8;
     for (let it = 0; it < 320; it++) {
       const disp = Object.fromEntries(ppl.map(p => [p.name, { x: 0, y: 0 }]));
@@ -3501,6 +3600,24 @@ details.more.danger summary{color:var(--tx2)}
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
     const sx = (W - 110) / Math.max(1, x1 - x0), sy = (H - 110) / Math.max(1, y1 - y0), sc = Math.min(1.6, sx, sy);
     for (const p of ppl) { const q = pos[p.name]; q.x = W / 2 + (q.x - (x0 + x1) / 2) * sc; q.y = H / 2 - 8 + (q.y - (y0 + y1) / 2) * sc; }
+    // 겹침 풀기: 동그라미 + 이름표가 닿으면 서로 민다 (줄인 뒤 좌표에서). 그다음 판 크기를 전체에 맞춘다
+    const rad = (p) => 17 + Math.min(11, Math.sqrt(p.count) * 2);
+    for (let it = 0; it < 120; it++) {
+      let push = false;
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const a = pos[ppl[i].name], b = pos[ppl[j].name];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        const need = rad(ppl[i]) + rad(ppl[j]) + 30;
+        if (d >= need) continue;
+        if (d < 0.01) { const t = (i * 7 + j * 13) % 360 * Math.PI / 180; dx = Math.cos(t); dy = Math.sin(t); d = 1; }
+        const m = (need - d) / 2;
+        a.x -= (dx / d) * m; a.y -= (dy / d) * m; b.x += (dx / d) * m; b.y += (dy / d) * m;
+        push = true;
+      }
+      if (!push) break;
+    }
+    ui.layoutView = fitView(ppl.map(p => pos[p.name].x), ppl.map(p => pos[p.name].y));
     ui.layout = pos;
     ui.layoutSig = sig;
     return pos;
@@ -3516,8 +3633,8 @@ details.more.danger summary{color:var(--tx2)}
       const q = pos[p.name], r = 17 + Math.min(11, Math.sqrt(p.count) * 2), h = hueOf(p.name);
       return `<g class="node" data-act="person" data-name="${escapeHtml(p.name)}" transform="translate(${q.x.toFixed(1)} ${q.y.toFixed(1)})"><circle r="${r.toFixed(1)}" fill="hsl(${h} 45% 24%)" stroke="hsl(${h} 70% ${p.kind === 'char' ? 72 : 52}%)"/><text text-anchor="middle" dy="5" fill="hsl(${h} 90% 86%)">${escapeHtml(p.name.slice(0, 1))}</text><text class="lbl" text-anchor="middle" y="${(r + 17).toFixed(1)}">${escapeHtml(clip(p.name, 8))}${isTitleName(p.name) ? '(???)' : ''}</text></g>`;
     }).join('');
-    const { W, H } = graphBox();
-    return `<svg class="graph" viewBox="0 0 ${W} ${H}" data-graph role="img" aria-label="인물 관계도"><g data-pan transform="translate(${g.x} ${g.y}) scale(${g.k})">${lines}${nodes}</g></svg>`;
+    const vb = ui.layoutView ?? { x: 0, y: 0, ...graphBox(ppl.length) };
+    return `<svg class="graph" viewBox="${vb.x.toFixed(0)} ${vb.y.toFixed(0)} ${vb.W.toFixed(0)} ${vb.H.toFixed(0)}" data-graph role="img" aria-label="인물 관계도"><g data-pan transform="translate(${g.x} ${g.y}) scale(${g.k})">${lines}${nodes}</g></svg>`;
   }
   let graphBound = null;
   function bindGraph() {
@@ -3525,24 +3642,26 @@ details.more.danger summary{color:var(--tx2)}
     if (!svg || graphBound === svg) return;
     graphBound = svg;
     const pan = svg.querySelector('[data-pan]');
+    const gk = svg.dataset.gstate || 'graph';
+    ui[gk] ??= { x: 0, y: 0, k: 1 };
     const pts = new Map();
     let start = null, moved = false, pinch = null;
-    const apply = () => pan.setAttribute('transform', `translate(${ui.graph.x} ${ui.graph.y}) scale(${ui.graph.k})`);
+    const apply = () => pan.setAttribute('transform', `translate(${ui[gk].x} ${ui[gk].y}) scale(${ui[gk].k})`);
     const toLocal = (cx, cy) => { const m = svg.getScreenCTM?.(); if (!m) return { x: cx, y: cy }; const p = new DOMPoint(cx, cy).matrixTransform(m.inverse()); return { x: p.x, y: p.y }; };
     const unit = () => 1 / (svg.getScreenCTM?.()?.a || 1);
     const zoomAt = (cx, cy, f) => {
-      const g = ui.graph, k2 = Math.max(0.4, Math.min(3, g.k * f));
+      const g = ui[gk], k2 = Math.max(0.4, Math.min(3, g.k * f));
       g.x = cx - ((cx - g.x) * k2) / g.k; g.y = cy - ((cy - g.y) * k2) / g.k; g.k = k2;
       apply();
     };
-    svg.addEventListener('pointerdown', (e) => { pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pts.size === 1) { start = { x: e.clientX, y: e.clientY, gx: ui.graph.x, gy: ui.graph.y }; moved = false; } if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: ui.graph.k }; } });
+    svg.addEventListener('pointerdown', (e) => { pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pts.size === 1) { start = { x: e.clientX, y: e.clientY, gx: ui[gk].x, gy: ui[gk].y }; moved = false; } if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: ui[gk].k }; } });
     svg.addEventListener('pointermove', (e) => {
       if (!pts.has(e.pointerId)) return;
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pts.size === 2 && pinch) {
         const [a, b] = [...pts.values()];
         const c = toLocal((a.x + b.x) / 2, (a.y + b.y) / 2);
-        zoomAt(c.x, c.y, (Math.hypot(a.x - b.x, a.y - b.y) / pinch.d) * pinch.k / ui.graph.k);
+        zoomAt(c.x, c.y, (Math.hypot(a.x - b.x, a.y - b.y) / pinch.d) * pinch.k / ui[gk].k);
         moved = true;
         return;
       }
@@ -3551,7 +3670,7 @@ details.more.danger summary{color:var(--tx2)}
       if (!moved && Math.hypot(dx, dy) < 5) return;
       if (!moved) svg.setPointerCapture?.(e.pointerId);
       moved = true;
-      ui.graph.x = start.gx + dx * unit(); ui.graph.y = start.gy + dy * unit();
+      ui[gk].x = start.gx + dx * unit(); ui[gk].y = start.gy + dy * unit();
       apply();
     });
     const end = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) start = null; };
@@ -3588,7 +3707,7 @@ details.more.danger summary{color:var(--tx2)}
     const best = (name) => pairsOf(name).sort((a, b) => b.co - a.co)[0];
     return `${fixCard()}<div class="peoplegrid">
       <section class="card graphcard">
-        <div class="ch"><h2>관계도</h2><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
+        <div class="ch" style="flex-wrap:wrap"><h2>관계도</h2>${ui.gFocus ? `<span class="chip on">${escapeHtml(ui.gFocus)} 중심</span><button class="btn sm g" data-act="gfocus-clear">전체로</button>` : (() => { const t = graphData().total; return t > 14 ? `<button class="btn sm g" data-act="gall">${ui.gAll ? '자주 나온 14명만' : `모두 보기 (${Math.min(60, t)}명)`}</button>` : ''; })()}<span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
         ${graphSvg() || '<div class="empty">관계가 생기면 선으로 이어져요.</div>'}
         <div class="legend"><span><i style="background:var(--warm)"></i>가까움</span><span><i style="background:var(--cold)"></i>멀어짐</span><span><i style="background:#4a5168"></i>보통</span><span>선 굵기 = 함께 나온 횟수</span><div class="gtools"><button class="iconbtn" data-act="gzoom" data-f="1.25" aria-label="확대">${icon('plus', 18)}</button><button class="iconbtn" data-act="gzoom" data-f="0.8" aria-label="축소">${icon('minus', 18)}</button><button class="iconbtn" data-act="greset" aria-label="처음 위치">${icon('refresh', 18)}</button></div></div>
       </section>
@@ -3597,6 +3716,133 @@ details.more.danger summary{color:var(--tx2)}
         <div class="search" style="margin-bottom:6px">${icon('search', 18)}<input id="pq" placeholder="이름 찾기" value="${escapeHtml(ui.peopleQ)}" autocomplete="off"></div>
         <div class="list">${list.map(p => { const b = best(p.name); const other = b ? (b.a === p.name ? b.b : b.a) : null; return `<button class="item" data-act="person" data-name="${escapeHtml(p.name)}">${avatar(p.name)}<div class="t"><b>${pname(p.name)}${p.kind === 'char' ? ' <span class="tag">캐릭터</span>' : p.kind === 'persona' ? ' <span class="tag">나</span>' : ''}</b><span>${p.count}번 등장${other ? ` · ${escapeHtml(josa(other, '과', '와'))} ${relLabel(b)}` : ''}</span></div>${b ? `<span class="chip ${b.aff >= 2 ? 'warm' : b.aff <= -2 ? 'cold' : ''}">${affLabel(b.aff)}</span>` : ''}</button>`; }).join('') || '<div class="empty small">찾는 이름이 없어요.</div>'}</div>
       </section></div>`;
+  }
+
+
+
+  const fitView = (xs, ys, m0 = 56) => { const x0 = Math.min(...xs) - m0, x1 = Math.max(...xs) + m0, y0 = Math.min(...ys) - m0, y1 = Math.max(...ys) + m0 + 18; const w = Math.max(360, x1 - x0), h = Math.max(300, y1 - y0); return { x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - h / 2, W: w, H: h }; };
+  /** 힘 배치 (마디 그림용): 서로 밀고 줄은 당긴 뒤, 겹침을 풀고 판 크기를 맞춘다 */
+  function forceLayout(items, edges, sig, cacheKey) {
+    if (ui[cacheKey] && ui[cacheKey].sig === sig) return ui[cacheKey];
+    const n = items.length, f = Math.max(1, Math.sqrt(n / 14));
+    const W = (wide() ? 640 : 380) * f, H = (wide() ? 440 : 460) * f;
+    const pos = {};
+    items.forEach((it, i) => { const a = (fnv(it.id) % 360) / 180 * Math.PI; const d = 0.15 + ((i * 37) % 100) / 300; pos[it.id] = { x: W / 2 + Math.cos(a) * W * d, y: H / 2 + Math.sin(a) * H * d }; });
+    const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.7;
+    let temp = W / 8;
+    for (let it = 0; it < 260; it++) {
+      const disp = Object.fromEntries(items.map(x => [x.id, { x: 0, y: 0 }]));
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const a = pos[items[i].id], b = pos[items[j].id];
+        let dx = a.x - b.x, dy = a.y - b.y; const d = Math.max(1, Math.hypot(dx, dy)); const fr = (k * k) / d; dx /= d; dy /= d;
+        disp[items[i].id].x += dx * fr; disp[items[i].id].y += dy * fr; disp[items[j].id].x -= dx * fr; disp[items[j].id].y -= dy * fr;
+      }
+      for (const e of edges) {
+        const a = pos[e.a], b = pos[e.b]; const dx = a.x - b.x, dy = a.y - b.y; const d = Math.max(1, Math.hypot(dx, dy));
+        const fr = ((d * d) / k) * (0.3 + Math.min(1, Math.log2(1 + e.w) / 4));
+        disp[e.a].x -= (dx / d) * fr; disp[e.a].y -= (dy / d) * fr; disp[e.b].x += (dx / d) * fr; disp[e.b].y += (dy / d) * fr;
+      }
+      for (const x of items) { const q = pos[x.id], v = disp[x.id]; v.x += (W / 2 - q.x) * 0.03; v.y += (H / 2 - q.y) * 0.03; const d = Math.max(1, Math.hypot(v.x, v.y)); q.x += (v.x / d) * Math.min(d, temp); q.y += (v.y / d) * Math.min(d, temp); }
+      temp *= 0.985;
+    }
+    const xs = items.map(x => pos[x.id].x), ys = items.map(x => pos[x.id].y);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const sc = Math.min(1.6, (W - 110) / Math.max(1, x1 - x0), (H - 110) / Math.max(1, y1 - y0));
+    for (const x of items) { const q = pos[x.id]; q.x = W / 2 + (q.x - (x0 + x1) / 2) * sc; q.y = H / 2 - 8 + (q.y - (y0 + y1) / 2) * sc; }
+    for (let it = 0; it < 120; it++) {
+      let push = false;
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const a = pos[items[i].id], b = pos[items[j].id];
+        let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+        const need = items[i].r + items[j].r + 30;
+        if (d >= need) continue;
+        if (d < 0.01) { const t = ((i * 7 + j * 13) % 360) * Math.PI / 180; dx = Math.cos(t); dy = Math.sin(t); d = 1; }
+        const m = (need - d) / 2; a.x -= (dx / d) * m; a.y -= (dy / d) * m; b.x += (dx / d) * m; b.y += (dy / d) * m; push = true;
+      }
+      if (!push) break;
+    }
+    ui[cacheKey] = { sig, pos, view: fitView(items.map(x => pos[x.id].x), items.map(x => pos[x.id].y)) };
+    return ui[cacheKey];
+  }
+  /** 마디 그림: 자주 나온 마디(기본 30개)와 그 사이 줄. 찾기를 하면 그 마디와 이웃만 */
+  function nodeMapSvg(gr, list) {
+    const q = (ui.nodesQ ?? '').trim();
+    let pick = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr));
+    if (q) { const hit = new Set(pick.filter(nd => nd.label.includes(q)).map(nd => nd.label)); for (const h of [...hit]) for (const [w] of [...(gr.edges.get(h) ?? new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10)) hit.add(w); pick = [...hit].map(w => gr.nodes.get(w)).filter(Boolean); }
+    pick = pick.slice(0, ui.nodesMany ? 80 : 30);
+    if (!pick.length) return '<div class="empty small">그릴 마디가 없어요.</div>';
+    const names = new Set(pick.map(nd => nd.label));
+    const max = Math.max(1, ...pick.map(nd => nd.sents.length));
+    const items = pick.map(nd => ({ id: nd.label, r: 14 + Math.sqrt(nd.sents.length / max) * 14, nd }));
+    // 줄: 마디마다 가장 굵은 줄 4개까지 (거미줄이 너무 빽빽하지 않게)
+    const eset = new Map();
+    for (const nd of pick) for (const [w, c] of [...(gr.edges.get(nd.label) ?? new Map())].filter(([w]) => names.has(w)).sort((a, b) => b[1] - a[1]).slice(0, 4)) { const key = [nd.label, w].sort().join('\u0001'); if (!eset.has(key)) eset.set(key, { a: nd.label, b: w, w: c }); }
+    const edges = [...eset.values()];
+    const L = forceLayout(items, edges, `${items.map(x => x.id).join(',')}|${edges.length}`, 'nlayout');
+    const g = (ui.ngraph ??= { x: 0, y: 0, k: 1 });
+    const lines = edges.map(e => { const a = L.pos[e.a], b = L.pos[e.b]; return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#56608a" stroke-width="${(1 + Math.min(5, Math.log2(1 + e.w))).toFixed(1)}" stroke-opacity="${Math.min(0.9, 0.3 + e.w / 12).toFixed(2)}" stroke-linecap="round"/>`; }).join('');
+    const nodes = items.map(x => {
+      const p = L.pos[x.id], person = x.nd.kind === 'person', bg = nodeIsCommon(x.nd, gr), h = hueOf(x.id);
+      const fill = person ? `hsl(${h} 45% 24%)` : 'rgba(140,158,255,.16)';
+      const stroke = person ? `hsl(${h} 70% 55%)` : (bg ? '#4a5168' : 'var(--ac)');
+      const inner = person ? escapeHtml(x.id.slice(0, 1)) : String(x.nd.sents.length);
+      return `<g class="node${bg ? ' bgnode' : ''}" data-act="node" data-name="${escapeHtml(x.id)}" transform="translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})"><circle r="${x.r.toFixed(1)}" fill="${fill}" stroke="${stroke}"${bg ? ' stroke-dasharray="4 4"' : ''}/><text text-anchor="middle" dy="5" fill="${person ? `hsl(${h} 90% 86%)` : '#c9d2ff'}" style="font-size:${person ? 15 : 12}px">${inner}</text><text class="lbl" text-anchor="middle" y="${(x.r + 16).toFixed(1)}">${escapeHtml(clip(x.id, 9))}</text></g>`;
+    }).join('');
+    const v = L.view;
+    return `<svg class="graph" viewBox="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.W.toFixed(0)} ${v.H.toFixed(0)}" data-graph data-gstate="ngraph" role="img" aria-label="기억 마디 그림"><g data-pan transform="translate(${g.x} ${g.y}) scale(${g.k})">${lines}${nodes}</g></svg>`;
+  }
+
+  // ══ 마디 탭 ══
+  function nodeStats() {
+    const gr = buildGraph();
+    const all = [...gr.nodes.values()];
+    return { gr, all, people: all.filter(n => n.kind === 'person').length, words: all.filter(n => n.kind === 'word').length, common: all.filter(n => nodeIsCommon(n, gr)).length };
+  }
+  function renderNodes() {
+    if (settings.graph === false) return `<div class="card"><div class="empty"><div class="big">🕸️</div><b>기억 마디가 꺼져 있어요</b>설정 › 이야기에서 "기억 마디"를 켜면, 인물 · 물건 · 사건 낱말로 기억을 이어서 말이 달라도 연결된 기억을 찾아요.</div></div>`;
+    const { gr, all, people, words, common } = nodeStats();
+    const back = nodeBacklog().length;
+    const q = (ui.nodesQ ?? '').trim();
+    const kind = ui.nodesKind ?? 'all';
+    const list = all.filter(n => (kind === 'all' || n.kind === kind) && (!q || n.label.includes(q))).sort((a, b) => b.sents.length - a.sents.length);
+    const fill = back ? `<div class="alert ac" style="margin-bottom:14px"><span class="ic">${icon('node')}</span><div class="t"><b>예전 기억 ${back}개에 아직 마디가 없어요</b><div class="d">이전 버전에서 저장된 기억이에요. 보낼 때마다 뒤에서 40개씩 채워요. 한 번에 하려면 눌러 주세요.</div></div><button class="btn" data-act="node-fill"${nodeFillAll ? ' disabled' : ''}>${nodeFillAll ? '채우는 중…' : '지금 채우기'}</button></div>` : '';
+    if (!all.length) return `${fill}<div class="card"><div class="empty"><div class="big">🕸️</div><b>아직 마디가 없어요</b>대화가 쌓이면 인물 · 물건 · 사건 낱말이 마디가 되어 여기에 모여요.</div></div>`;
+    const max = Math.max(1, ...list.map(n => n.sents.length));
+    const chip = (n) => { const bg = nodeIsCommon(n, gr); const sz = 0.85 + Math.min(0.5, Math.sqrt(n.sents.length / max) * 0.5); return `<button class="nchip ${n.kind}${bg ? ' bg' : ''}" style="--z:${sz.toFixed(2)};${n.kind === 'person' ? `--h:${hueOf(n.label)}` : ''}" data-act="node" data-name="${escapeHtml(n.label)}">${n.kind === 'person' ? avatar(n.label, 'xs') : ''}<span>${escapeHtml(n.label)}</span><b>${n.sents.length}</b></button>`; };
+    const mode = ui.nodesMode ?? 'map';
+    const head = `${fill}<div class="kpis" style="margin-bottom:14px">${kpiBox(all.length, '마디')}${kpiBox(people, '인물')}${kpiBox(words, '낱말')}${kpiBox(common, '배경 낱말')}</div>
+      <div class="seg" style="margin-bottom:12px"><button class="${mode === 'map' ? 'on' : ''}" data-act="nodes-mode" data-v="map">그림</button><button class="${mode === 'list' ? 'on' : ''}" data-act="nodes-mode" data-v="list">목록</button></div>`;
+    if (mode === 'map') return `${head}<section class="card graphcard">
+        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2><button class="btn sm g" data-act="nodes-many">${ui.nodesMany ? '자주 나온 30개만' : '80개까지 보기'}</button><button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
+        <div style="padding:0 16px"><div class="search" style="margin:10px 0 4px">${icon('search', 18)}<input id="nq" placeholder="마디 찾기 (그 마디와 이웃만 그려요)" value="${escapeHtml(ui.nodesQ ?? '')}" autocomplete="off"></div></div>
+        ${nodeMapSvg(gr, list)}
+        <div class="legend"><span><i style="background:var(--ac)"></i>낱말 (안 숫자 = 붙은 기억)</span><span>동그라미 = 인물</span><span>선 굵기 = 같은 문장에 나온 횟수</span><div class="gtools"><button class="iconbtn" data-act="gzoom" data-g="ngraph" data-f="1.25" aria-label="확대">${icon('plus', 18)}</button><button class="iconbtn" data-act="gzoom" data-g="ngraph" data-f="0.8" aria-label="축소">${icon('minus', 18)}</button><button class="iconbtn" data-act="greset" data-g="ngraph" aria-label="처음 위치">${icon('refresh', 18)}</button></div></div>
+      </section>`;
+    return `${head}
+      <section class="card">
+        <div class="search" style="margin-bottom:10px">${icon('search', 18)}<input id="nq" placeholder="마디 찾기 (예: 목도리)" value="${escapeHtml(ui.nodesQ ?? '')}" autocomplete="off"></div>
+        <div class="seg" style="margin-bottom:12px">${[['all', `전체 ${all.length}`], ['person', `인물 ${people}`], ['word', `낱말 ${words}`]].map(([v, lb]) => `<button class="${kind === v ? 'on' : ''}" data-act="nodes-kind" data-v="${v}">${lb}</button>`).join('')}</div>
+        <div class="xs dim" style="margin-bottom:10px">숫자 = 붙은 기억 수 · 흐린 것 = 서술에 너무 자주 나와서 켜지지 않는 배경 낱말 · 누르면 연결된 마디와 원문</div>
+        <div class="nchips">${list.slice(0, 300).map(chip).join('') || '<div class="empty small">찾는 마디가 없어요.</div>'}</div>
+        ${list.length > 300 ? `<div class="xs dim" style="margin-top:8px">위 300개만 보여요. 찾기로 좁혀 보세요.</div>` : ''}
+      </section>`;
+  }
+  function nodeSheet(label) {
+    const gr = buildGraph();
+    const n = gr.nodes.get(label);
+    if (!n) return '<div class="empty">마디를 찾을 수 없어요.</div>';
+    const links = [...(gr.edges.get(label) ?? new Map())].sort((a, b) => b[1] - a[1]).slice(0, 24);
+    const sents = n.sents.map(id => facts[id]).filter(Boolean).sort((a, b) => b.mi - a.mi);
+    const seen = new Set();
+    const uniq = sents.filter(f => (seen.has(f.sent) ? false : seen.add(f.sent)));
+    const bg = nodeIsCommon(n, gr);
+    return `<div class="sh">${n.kind === 'person' ? avatar(label, 'lg') : `<span class="av lg" style="--h:200">${icon('node', 22)}</span>`}<div class="t"><h3>${escapeHtml(label)}</h3><div class="small muted">${n.kind === 'person' ? '인물' : '낱말'} · 기억 ${uniq.length}개 · 메시지 ${n.msgs.size}개${bg ? ' · 배경 낱말 (켜지지 않음)' : ''}</div></div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
+      ${n.kind === 'person' ? `<div class="row" style="gap:8px;margin-bottom:6px"><button class="btn sm" data-act="person" data-name="${escapeHtml(label)}">인물 정보</button><button class="btn sm g" data-act="gfocus" data-name="${escapeHtml(label)}">관계도에서 보기</button></div>` : ''}
+      <div class="sec">이어진 마디 <span class="dim xs" style="font-weight:400">같은 문장에 같이 나온 횟수</span></div>
+      ${links.length ? `<div class="nchips">${links.map(([w, c]) => { const m = gr.nodes.get(w); return `<button class="nchip ${m?.kind ?? 'word'}" style="--z:.92;${m?.kind === 'person' ? `--h:${hueOf(w)}` : ''}" data-act="node" data-name="${escapeHtml(w)}">${m?.kind === 'person' ? avatar(w, 'xs') : ''}<span>${escapeHtml(w)}</span><b>${c}</b></button>`; }).join('')}</div>` : '<div class="empty small">아직 이어진 마디가 없어요.</div>'}
+      <div class="sec">붙은 기억 <span class="dim xs" style="font-weight:400">최근 순 · 눌러서 원문</span></div>
+      <div class="list">${uniq.slice(0, 40).map(f => factItem(f)).join('')}</div>
+      ${uniq.length > 40 ? `<div class="xs dim" style="margin-top:8px">최근 40개만 보여요.</div>` : ''}`;
   }
 
   // ══ 약속 ══
@@ -3790,7 +4036,7 @@ details.more.danger summary{color:var(--tx2)}
   // ══ 시트: 인물 · 기억 ══
   function renderSheet() {
     const s = ui.sheet;
-    const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : s.type === 'dircards' ? dirSheet() : s.type === 'memfilter' ? memFilterSheet() : s.type === 'cardform' ? cardFormSheet() : '';
+    const inner = s.type === 'person' ? personSheet(s.name) : s.type === 'chunk' ? chunkSheet(s.ck) : s.type === 'dircards' ? dirSheet() : s.type === 'memfilter' ? memFilterSheet() : s.type === 'cardform' ? cardFormSheet() : s.type === 'node' ? nodeSheet(s.name) : '';
     return inner;
   }
   const PH = { char: '캐릭터', user: '나', other: '다른 인물' };
@@ -3847,6 +4093,7 @@ details.more.danger summary{color:var(--tx2)}
       <div class="col">
         <div class="row"><input class="inp" id="alias-in" placeholder="다른 이름(별명) 추가" style="flex:1;min-width:140px"><button class="btn" data-act="alias" data-name="${escapeHtml(name)}">추가</button></div>
         ${others.length && !titleWarn ? `<div class="row"><select class="sel" id="merge-in" style="flex:1;min-width:140px"><option value="">같은 인물로 합치기…</option>${others.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join('')}</select><button class="btn" data-act="merge" data-name="${escapeHtml(name)}">합치기</button></div>` : ''}
+        <button class="btn" data-act="gfocus" data-name="${escapeHtml(name)}">관계도에서 이 사람 중심으로 보기</button>
         ${titleWarn ? '' : `<button class="btn d" data-act="hide-person" data-name="${escapeHtml(name)}">숨기기 (인물이 아니에요)</button>`}
       </div>`;
   }
@@ -4121,6 +4368,7 @@ details.more.danger summary{color:var(--tx2)}
     document.body.addEventListener('toggle', (e) => { const k = e.target?.dataset?.keep; if (k) ui.keepOpen.set(k, e.target.open); }, true);
     document.body.addEventListener('input', (e) => {
       if (e.target.id === 'cq') { ui.cards.q = e.target.value; clearTimeout(ui.cqTimer); ui.cqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('cq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
+      if (e.target.id === 'nq') { ui.nodesQ = e.target.value; clearTimeout(ui.nqTimer); ui.nqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('nq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'pq') { ui.peopleQ = e.target.value; clearTimeout(ui.pqTimer); ui.pqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('pq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'mq') { ui.search.q = e.target.value; return; }
       if (['budget', 'candidates', 'neighbor', 'tailTokens'].includes(e.target.dataset?.field)) {
@@ -4204,6 +4452,18 @@ details.more.danger summary{color:var(--tx2)}
       case 'go-settings': ui.view = 'settings'; render(); return;
       case 'sheet-bg': case 'sheet-close': ui.sheet = null; render(); return;
       case 'person': ui.sheet = { type: 'person', name: el.dataset.name }; render(); return;
+      case 'node': ui.sheet = { type: 'node', name: el.dataset.name }; render(); return;
+      case 'nodes-kind': ui.nodesKind = el.dataset.v; render(); return;
+      case 'gall': ui.gAll = !ui.gAll; ui.gFocus = null; ui.layout = null; ui.graph = { x: 0, y: 0, k: 1 }; render(); return;
+      case 'gfocus': ui.gFocus = el.dataset.name; ui.gAll = false; ui.layout = null; ui.graph = { x: 0, y: 0, k: 1 }; ui.sheet = null; ui.view = 'people'; render(); return;
+      case 'gfocus-clear': ui.gFocus = null; ui.layout = null; ui.graph = { x: 0, y: 0, k: 1 }; render(); return;
+      case 'node-fill': {
+        if (nodeFillAll) { toast('이미 채우는 중이에요.'); return; }
+        const run = fillNodesAll((done, all) => { ui.progress = `예전 기억 마디 채우는 중… ${done}/${all}`; ui.progressPct = Math.round(done / all * 100); softRender(); });
+        render();
+        try { const n = await run; ui.progress = ''; render(); toast(n ? `기억 ${n}개에 마디를 채웠어요.` : '이미 다 채워져 있어요.'); } catch (error) { ui.progress = ''; render(); toast(String(error?.message ?? error)); }
+        return;
+      }
       case 'chunk': ui.sheet = { type: 'chunk', ck: el.dataset.ck }; render(); return;
       case 'pin': { const on = togglePin(el.dataset.ck); toast(on ? '고정했어요. 매번 답장에 넣어요.' : '고정을 풀었어요.'); render(); return; }
       case 'thread': { const t = story.threads.find(x => x.id === Number(el.dataset.id)); if (t) { t.status = el.dataset.to; saveStory(); toast(isSecret(t) ? (t.status === 'open' ? '다시 숨긴 비밀로 옮겼어요' : t.status === 'done' ? '드러난 비밀로 옮겼어요' : '비밀 목록에서 뺐어요') : t.status === 'open' ? '다시 열었어요' : t.status === 'done' ? '지켜진 약속으로 옮겼어요' : '취소된 약속으로 옮겼어요'); } render(); return; }
@@ -4309,8 +4569,11 @@ details.more.danger summary{color:var(--tx2)}
       case 'alias': { const v = document.getElementById('alias-in')?.value?.trim(); const p = story.people[el.dataset.name]; if (v && p && !p.aliases.includes(v)) { p.aliases.push(v); saveStory(); toast(`"${v}"도 ${josa(p.name, '으로', '로')} 볼게요`); } render(); return; }
       case 'merge': { const into = document.getElementById('merge-in')?.value; if (!into) { toast('합칠 인물을 고르세요'); return; } if (await confirmDialog(`${josa(el.dataset.name, '을', '를')} ${josa(into, '과', '와')} 같은 인물로 합칠까요?\n${josa(el.dataset.name, '은', '는')} ${into}의 다른 이름이 돼요.`, '합치기')) { mergePeople(el.dataset.name, into); ui.sheet = { type: 'person', name: into }; ui.layout = null; render(); } return; }
       case 'hide-person': if (await confirmDialog(`${josa(el.dataset.name, '을', '를')} 인물 목록에서 뺄까요?\n다시 인물로 잡지 않아요.`, '빼기', true)) { hidePerson(el.dataset.name); ui.sheet = null; ui.layout = null; render(); } return;
-      case 'gzoom': { const f = Number(el.dataset.f); const g = ui.graph; const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
-      case 'greset': ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; render(); return;
+      case 'gzoom': { const f = Number(el.dataset.f); const g = (ui[el.dataset.g || 'graph'] ??= { x: 0, y: 0, k: 1 }); const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
+      case 'greset': if (el.dataset.g === 'ngraph') { ui.ngraph = { x: 0, y: 0, k: 1 }; ui.nlayout = null; } else { ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; } render(); return;
+      case 'nodes-mode': ui.nodesMode = el.dataset.v; render(); return;
+      case 'nodes-many': ui.nodesMany = !ui.nodesMany; ui.nlayout = null; ui.ngraph = { x: 0, y: 0, k: 1 }; render(); return;
+      case 'nodes-bg': ui.nodesBg = !ui.nodesBg; ui.nlayout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
       case 'dircards': ui.sheet = null; ui.view = 'cards'; render(); document.getElementById('sc').scrollTop = 0; return;
       case 'dsheet-pack': ui.sheet = { ...ui.sheet, pack: el.dataset.v, edit: null }; render(); return;
@@ -4696,7 +4959,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
