@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -198,6 +198,7 @@
       cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
       jevParallel: clampNum(s.jevParallel, 2, 1, 10),
@@ -895,14 +896,33 @@
     if (cfg.budget <= 0) return { block: '', picked: [], trace: { cands: 0 } };
     const present = presentCast(windowEntries);
     const latest = memText(windowEntries[windowEntries.length - 1]?.text ?? '');
-    const ctx = windowEntries.slice(-3).map(m => memText(m.text)).join('\n').slice(-1500);
-    const state = windowEntries.slice(-4).map(m => `[${m.role === 'user' ? 'USER' : 'STORY'}]\n${memText(m.text).slice(-1200)}`).join('\n\n');
+    // 장면: 뒤에서부터 메시지 통째로 sceneChars자까지. 한 메시지가 그보다 길면 앞 1/4 + 뒤 3/4
+    const maxScene = cfg.sceneChars ?? 6000;
+    const scene = [];
+    let sceneLen = 0;
+    for (let i = windowEntries.length - 1; i >= 0 && scene.length < 6; i--) {
+      let t = memText(windowEntries[i].text);
+      if (!t) continue;
+      if (t.length > maxScene) t = `${t.slice(0, Math.round(maxScene / 4))}\n…\n${t.slice(-Math.round(maxScene * 3 / 4))}`;
+      if (scene.length && sceneLen + t.length > maxScene) break;
+      scene.unshift({ role: windowEntries[i].role, t });
+      sceneLen += t.length;
+    }
+    const ctx = scene.map(m => m.t).join('\n').slice(-1500);
+    const state = scene.map(m => `[${m.role === 'user' ? 'USER' : 'STORY'}]\n${m.t}`).join('\n\n');
+    // 검색어: 내 메시지 + 직전 답장을 문단 묶음(700자쯤)으로 나눠 최대 4갈래 (여러 이야기가 섞인 긴 답장도 각자 찾게)
+    const lastStory = [...scene].reverse().find(m => m.role !== 'user')?.t ?? '';
+    const topics = [];
+    { let cur = ''; for (const p of lastStory.split(/\n+/).map(x => x.trim()).filter(Boolean)) { cur = cur ? `${cur}\n${p}` : p; if (cur.length >= 700) { topics.push(cur); cur = ''; } } if (cur.length >= 150 || (!topics.length && cur)) topics.push(cur); }
+    const pickTopics = topics.length <= 4 ? topics : [0, 1, 2, 3].map(k => topics[Math.round(k * (topics.length - 1) / 3)]);
+    // 직전 답장이 짧으면(문단으로 나눌 게 없으면) 예전처럼 최근 흐름 한 덩어리로
+    const queries = [latest.slice(0, 2000) || ctx, ...(lastStory.length >= 1200 && pickTopics.length >= 2 ? pickTopics.map(t => t.slice(0, 1500)) : [ctx || latest])].filter(Boolean);
     const hasPool = facts.some(f => f.mi < limitMi);
     let qv = [];
-    if (hasPool) { try { qv = await timed(tr, '질문 임베딩', () => queryVecs([latest.slice(0, 2000) || ctx, ctx || latest])); } catch (error) { setError('임베딩', error); } }
+    if (hasPool) { try { qv = await timed(tr, '질문 임베딩', () => queryVecs(queries), () => `검색어 ${queries.length}개`); } catch (error) { setError('임베딩', error); } }
     const wantUpd = /지금|현재|아직|최신|요즘|바뀐|이제/u.test(latest);
     const nMsg = Math.max(4, Math.round(cfg.candidates / 2)), cap = cfg.candidates * 4;
-    const first = hasPool ? await timed(tr, '후보 찾기', async () => retrieveBooks(qv, latest, new Set(), nMsg, cap, limitMi, wantUpd), () => `책 ${nMsg}권 · 문장 ${cap}개까지${wantUpd ? ' · 바뀐 것 먼저' : ''}`) : [];
+    const first = hasPool ? await timed(tr, '후보 찾기', async () => retrieveBooks(qv, latest, new Set(), nMsg, cap, limitMi, wantUpd, present.filter(n => !['char', 'persona'].includes(story.people[n]?.kind))), () => `책 ${nMsg}권 · 문장 ${cap}개까지${wantUpd ? ' · 바뀐 것 먼저' : ''}`) : [];
     const dir = cfg.director && cfg.story && present.length ? directorQuestions(present, qv, ctx) : null;
     let levels = new Map(), need = 'none', jevOk = true, hint = null;
     try {
@@ -2000,7 +2020,10 @@
   const WORTH_DROP = 0.6, WORTH_LOW = 1.5;   // 이보다 낮으면 버림 / 꺼낼 때 조금 뒤로
   const worthOf = (f) => f.w ?? 3;            // 예전에 저장한 건 점수가 없다 → 보통 취급
   const ROLE_GUIDE = '[ROLES] For each "Sn «word»", pick the role of that word in Sn: who = the doer; with = who does it together with them; whom = the target, or the one something is kept from; when; where; what = the action or the thing itself; how = manner or means; why = reason or purpose; none = filler, ending, or connective.';
-  const MAX_FACT_SENTS = 24;   // 메시지 하나에서 칸 줄로 만들 문장 수
+  const MAX_FACT_SENTS = 120;  // 메시지 하나에서 기억으로 만들 문장 수 (긴 답장도 끝까지)
+  const OLD_FACT_SENTS = 24;    // 예전 상한. v 표시가 없는 메시지는 여기까지만 만들어져 있다
+  const FACT_V = 2;
+  const isOldList = (list) => !list?.some(e => e.v >= FACT_V);
   const FACT_PER_CALL = 40;    // Jev 한 번에 보여 줄 문장 수
   let factStore = new Map();   // 메시지 지문 → [{ pos, si, k, s: [8칸], vec, p }]  (빈 배열 = 정리했지만 남길 게 없음)
   let factDirty = new Set();
@@ -2054,6 +2077,7 @@
       if (!list?.length) continue;
       const ids = msgChunkIds(mi);
       for (const f of list) {
+        if (f.pos < 0) continue;
         const c = chunks[ids[f.pos]];
         const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
         facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
@@ -2066,7 +2090,7 @@
   function factBacklog() {
     const upto = sentUpto();
     const out = [];
-    for (let mi = 0; mi < upto; mi++) if (!factStore.has(timeline[mi].key)) out.push(mi);
+    for (let mi = 0; mi < upto; mi++) { const list = factStore.get(timeline[mi].key); if (!list || (isOldList(list) && keepableCount(mi) > OLD_FACT_SENTS)) out.push(mi); }
     return out;
   }
 
@@ -2098,18 +2122,31 @@
    * 메시지 몇 개를 칸 줄로 만든다 (보낸 뒤 뒤에서). Jev 한 번에 문장 40개까지.
    * 결과는 메시지 지문별로 저장. 남길 게 없는 메시지도 빈 배열로 남겨 다시 하지 않는다.
    */
+  /** 기억으로 만들 수 있는 문장 수 (너무 짧은 것 · 질문은 빼고) */
+  const keepCache = new Map();   // 메시지 지문 → 수 (글이 같으면 같다)
+  function keepableCount(mi) {
+    const key = timeline[mi].key;
+    if (keepCache.has(key)) return keepCache.get(key);
+    let n = 0;
+    msgChunkIds(mi).forEach(id => sentencesOfChunk(chunks[id]).forEach(s => { const clean = unquote(s); if (clean.replace(/[\s\p{P}]/gu, '').length >= 4 && !/[?？]\s*$/u.test(clean)) n++; }));
+    if (keepCache.size > 5000) keepCache.clear();
+    keepCache.set(key, n);
+    return n;
+  }
   async function factMessages(mis) {
     if (!mis.length) return 0;
     const room = chatKey;
     const keyOf = new Map(mis.map(mi => [mi, timeline[mi].key]));
     const jobs = [];   // { mi, pos, si, s, words, roles(rule) }
+    const oldDone = new Map(mis.map(mi => { const l = factStore.get(timeline[mi].key); return [mi, l && isOldList(l) ? OLD_FACT_SENTS : 0]; }));
     for (const mi of mis) {
-      let n = 0;
+      let n = 0, seen = 0;
       msgChunkIds(mi).forEach((id, pos) => sentencesOfChunk(chunks[id]).forEach((s, si) => {
         if (n >= MAX_FACT_SENTS) return;
         const clean = unquote(s);
         if (clean.replace(/[\s\p{P}]/gu, '').length < 4) return;   // "응.", "…" 같은 건 바로 건너뜀
         if (/[?？]\s*$/u.test(clean)) return;                         // 질문은 기억이 아니다 (비슷한 질문이 후보 자리를 뺏는다)
+        if (seen++ < oldDone.get(mi)) { n++; return; }               // 예전에 이미 만든 앞부분
         const words = clean.split(/\s+/).filter(Boolean).slice(0, 24);
         jobs.push({ mi, pos, si, s: clean, words, rule: words.map(ruleRole) });
         n++;
@@ -2146,7 +2183,7 @@
         if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
         if (!slots.where.length && clock.place) slots.where.push(clock.place);
         const s = ROLE_ORDER.map(r => slots[r].join(' '));
-        made.get(j.mi).push({ pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), _sent: j.s });
+        made.get(j.mi).push({ v: FACT_V, pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), _sent: j.s });
       });
     }
     // 칸 줄 임베딩 (찾기 열쇠)
@@ -2160,7 +2197,7 @@
         all.forEach(f => { delete f._sent; });
       } catch (error) { setError('칸 줄 임베딩', error); }
     }
-    for (const [mi, list] of made) { const k = keyOf.get(mi); factStore.set(k, list); factDirty.add(shardOf(k)); }
+    for (const [mi, list] of made) { const k = keyOf.get(mi); const prev = oldDone.get(mi) ? (factStore.get(k) ?? []) : []; const all = [...prev, ...list]; factStore.set(k, all.some(e => e.v >= FACT_V) ? all : [...all, { v: FACT_V, pos: -1, si: -1, k: 'none', s: [] }]); factDirty.add(shardOf(k)); }
     rebuildFacts();
     saveFacts();
     return mis.length;
@@ -2225,14 +2262,24 @@
    * 책 단위로 꺼내기: 문장 점수로 비슷한 메시지(책)를 고르고, 그 책의 문장을 전부 후보로 (제목 줄 때문에 뽑혀도 정답 줄이 같이 Jev 앞에)
    *  wantUpd: 질문이 "지금 · 현재 · 아직"을 물으면 바뀜 표시가 있는 책을 먼저
    */
-  function retrieveBooks(qvecs, query, exclude, nMsg, cap, limitMi, wantUpd = false) {
+  function retrieveBooks(qvecs, query, exclude, nMsg, cap, limitMi, wantUpd = false, names = []) {
     const pool = facts.filter(f => f.mi < limitMi);
     if (!pool.length) return [];
-    const sem = qvecs.length ? pool.filter(f => f.vec).map(f => { let s = -Infinity; qvecs.forEach((q, i) => { const v = simSigns(q, f.vec) * (i === 0 ? 1 : 0.85); if (v > s) s = v; }); return [f.id, s]; }).sort((a, b) => b[1] - a[1]) : [];
+    // 뜻 갈래: 검색어마다 따로 순위 (첫 번째 = 내 메시지가 조금 더 무겁다). 한 덩어리로 섞으면 여러 이야기가 든 장면에서 다 애매해진다
+    const semLists = qvecs.map((q, qi) => [qi === 0 ? 1 : 0.8, pool.filter(f => f.vec).map(f => [f.id, simSigns(q, f.vec)]).sort((x, y) => y[1] - x[1]).slice(0, 120)]);
+    // 이름 갈래: 지금 장면에 나온 인물마다 그 사람이 나온 옛 문장 1개만 (꺼낼 만한 것 · 최근 것), 최대 3명.
+    //  많이 넣으면 그 인물 이야기가 후보를 독차지한다 (V7에서 한 문제 놓침)
+    const nameList = [];
+    for (const n of names.slice(0, 3)) {
+      const forms = nameForms(story.people[n] ?? { name: n, aliases: [] }).filter(x => x.length >= 2);
+      const best = pool.filter(f => forms.some(x => f.sent.includes(x)) && !nameList.includes(f)).sort((x, y) => (y.w ?? 3) - (x.w ?? 3) || y.mi - x.mi)[0];
+      if (best) nameList.push(best);
+    }
     const qg = gramsOf(query);
     const lex = pool.map(f => { let hit = 0; for (const g of qg) if (f.grams.has(g)) hit++; return [f.id, hit / Math.sqrt(1 + f.grams.size / 30)]; }).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]);
     const fs = new Map();
-    sem.slice(0, 200).forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + 1 / (60 + r)));
+    for (const [wt, list] of semLists) list.forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + wt / (60 + r)));
+    nameList.forEach((f, r) => fs.set(f.id, (fs.get(f.id) ?? 0) + 0.6 / (60 + r)));
     lex.slice(0, 200).forEach(([id], r) => fs.set(id, (fs.get(id) ?? 0) + 1 / (60 + r)));
     for (const [id, sc] of fs) if (worthOf(facts[id]) < WORTH_LOW) fs.set(id, sc * 0.85);
     const books = new Map();
@@ -2744,7 +2791,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -3430,6 +3477,7 @@ details.more.danger summary{color:var(--tx2)}
         ${presetSeg(cur)}
         <details class="more"${keepOpen('adv-mem', cur === 'custom')}><summary>직접 조절</summary>
           <div class="field inline"><div><label>기억 예산 (토큰)</label><div class="help">한 번에 넣는 기억의 최대 크기. 0이면 안 넣어요.</div></div>${num('budget', 0, 20000)}</div>
+          <div class="field inline"><div><label>장면 길이 (글자)</label><div class="help">기억을 고를 때 최근 대화를 메시지 통째로 이만큼까지 보여 줘요. 답장이 길면 늘리세요. 길수록 정확하지만 Jev 비용이 조금 늘어요.</div></div>${num('sceneChars', 1000, 30000)}</div>
           <div class="field inline"><div><label>Jev 후보 수</label><div class="help">많으면 덜 놓치지만 Jev 비용이 늘어요.</div></div>${num('candidates', 4, 80)}</div>
           <div class="field inline"><div><label>이웃 칸 줄</label><div class="help">고른 기억과 같은 메시지의 앞뒤 문장을 몇 개씩 같이 넣을지.</div></div>${num('neighbor', 0, 3)}</div>
           <div class="field inline"><div><label>방금 흐름 (토큰)</label><div class="help">Risu가 막 안 보낸 대화 끝부분을 늘 이만큼. 아직 칸 줄이 없으면 원문으로.</div></div>${num('tailTokens', 0, 2000)}</div>
