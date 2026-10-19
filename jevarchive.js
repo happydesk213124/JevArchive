@@ -852,7 +852,7 @@
   }
 
   /** 이야기 줄: 지금 · 관계 · 열린 약속 (짧게) */
-  function storyLines(present, upto) {
+  function storyLines(present, upto, recalled = []) {
     const out = [];
     out.ko = [];
     const clock = storyClock(upto);
@@ -866,23 +866,25 @@
       if (!p || (p.co < 2 && !p.type && Math.abs(p.aff) < 2 && !im)) continue;
       rel.push({ p, w: (p.type ? 3 : 0) + Math.abs(p.aff) + Math.log2(1 + p.co) + (im ? 2 : 0) });
     }
+    const relOut = [];
+    relOut.ko = [];
     rel.sort((a, b) => b.w - a.w).slice(0, 4).forEach(({ p }) => {
-      out.push(`${p.a} ↔ ${p.b}: ${[p.type ? relEn(p) : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`, settings.intim && p.intim?.n ? `intimate ×${p.intim.n}` : null].filter(Boolean).join(', ')}`);
-      out.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? relKo(p) : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`, settings.intim && p.intim?.n ? `관계 ${p.intim.n}번` : null].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
+      relOut.push(`${p.a} ↔ ${p.b}: ${[p.type ? relEn(p) : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`, settings.intim && p.intim?.n ? `intimate ×${p.intim.n}` : null].filter(Boolean).join(', ')}`);
+      relOut.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? relKo(p) : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`, settings.intim && p.intim?.n ? `관계 ${p.intim.n}번` : null].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
     });
-    const th = openThreads().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-3);
-    for (const t of th) {
-      out.push(`Open promise: ${t.who}${t.to ? ` → ${t.to}` : ''}: "${tagLine(t)}" (#${t.mi + 1})`);
-      out.ko.push({ t: `약속 · ${t.who}${t.to ? ` → ${t.to}` : ''}: ${clip(t.text, 48)}`, c: 'gold' });
-    }
-    // 비밀: 숨기는 사람이나 숨기는 상대가 장면에 있을 때. 화면 칩에는 내용을 안 보여 준다 (스포일러)
-    for (const t of openSecrets().filter(t => present.includes(t.who) || (t.to && present.includes(t.to))).slice(-2)) {
+    const near = (t) => present.includes(t.who) || (t.to && present.includes(t.to)) || present.some(n => nameForms(story.people[n] ?? { name: n, aliases: [] }).some(f => f.length >= 2 && String(t.text).includes(f)));
+    const memOpen = settings.story ? memThreads().filter(t => t.status === 'open') : [];
+    // 비밀: 숨기는 사람이 장면에 있을 때 (숨기는 사람을 모르면 글에 장면 인물이 나올 때). 화면 칩에는 내용을 안 보여 준다 (스포일러)
+    const keeperNear = (t) => (t.who ? present.includes(t.who) : near(t));
+    for (const t of [...openSecrets(), ...memOpen.filter(t => isSecret(t))].filter(keeperNear).sort((a, b) => a.mi - b.mi).slice(-2)) {
       const from = t.to ?? 'the others';
+      if (!t.who) { out.push(`Secret (kept hidden so far): "${tagLine(t)}" — keep it hidden unless the story itself reveals it.`); out.ko.push({ t: '비밀 · 숨기는 중', c: 'sec' }); continue; }
       out.push(`Secret: ${t.who} hides from ${from}: "${tagLine(t)}" — ${from} does not know this yet. Keep it hidden unless the story itself reveals it.`);
       out.ko.push({ t: `비밀 · ${t.who} (${t.to ?? '모두'} 모르게)`, c: 'sec' });
     }
     // 인물 태그: 장면에 나온 인물만, 4명까지
-    if (settings.tags !== false) for (const n of present.slice(0, 4)) {
+    // 장면 인물 먼저, 그다음 꺼낸 기억에 나온 인물 (예: 체육관 앞 → 관장의 태그)
+    if (settings.tags !== false) for (const n of [...new Set([...present, ...recalled])].filter(n => Object.keys(story.tags?.[n] ?? {}).length).slice(0, 4)) {
       const { pos, neg } = topTags(n);
       if (!pos.length && !neg.length) continue;
       const top = [...pos, ...neg].sort((x, y) => Math.abs(y[1].s) - Math.abs(x[1].s))[0];
@@ -890,6 +892,14 @@
       out.push(`${n} tags: ${[pos.length ? `+ ${fmt(pos)}` : '', neg.length ? `- ${fmt(neg)}` : ''].filter(Boolean).join(' · ')}${top?.[1].q ? ` (e.g. "${clip(top[1].q, 60)}")` : ''}`);
       out.ko.push({ t: `${n} · ${[pos.length ? `💚 ${pos.map(x => x[0]).join(' · ')}` : '', neg.length ? `💔 ${neg.map(x => x[0]).join(' · ')}` : ''].filter(Boolean).join(' ')}`, c: '' });
     }
+    const th = [...openThreads(), ...memOpen.filter(t => !isSecret(t))].filter(near).sort((a, b) => a.mi - b.mi).slice(-3);
+    for (const t of th) {
+      out.push(`Open promise: ${t.who || 'someone'}${t.to ? ` → ${t.to}` : ''}: "${tagLine(t)}" (#${t.mi + 1})`);
+      out.ko.push({ t: `약속 · ${t.who}${t.to ? ` → ${t.to}` : ''}: ${clip(t.text, 48)}`, c: 'gold' });
+    }
+    // 관계는 맨 뒤: 예산이 모자라면 관계부터 빠진다
+    out.push(...relOut);
+    out.ko.push(...relOut.ko);
     if ([...openThreads(), ...openSecrets()].some(t => t.tags?.some(g => g.r !== 'none') && out.some(l => l.includes(tagLine(t))))) {
       out.splice(out[0]?.startsWith('Now:') ? 1 : 0, 0, 'Slots (auto, may be rough): who/with/whom/when/where/what/how/why, X=empty');
       out.ko.splice(0, 0);
@@ -973,7 +983,8 @@
     const scored = [...levels].map(([id, lv]) => ({ f: facts[id], lv })).filter(x => x.f && x.lv >= KEEP_LEVEL).sort((a, b) => b.lv - a.lv || b.f.id - a.f.id);
 
     // 이야기 줄은 예산의 30%까지 (형식 설명은 아래에서 한 번만)
-    const sLines = storyLines(present, timeline.length);
+    const recalledNames = settings.story ? [...new Set(scored.slice(0, 8).flatMap(x => peopleIn(x.f.sent ?? '')))] : [];
+    const sLines = storyLines(present, timeline.length, recalledNames);
     const dLine = hint ? directorLine(hint) : '';
     const head = [...sLines.filter(l => !l.startsWith('Slots (')), ...(dLine ? [dLine] : [])];
     let headText = head.join('\n');
@@ -1176,8 +1187,17 @@
   }
   function speakersIn(text) {
     const out = [];
-    for (const line of String(text ?? '').split('\n')) { const m = SPEAKER_LINE.exec(line); if (m && !NAME_STOP.has(m[1].trim().toLowerCase())) out.push(m[1].trim()); }
-    return out;
+    for (const line of String(text ?? '').split('\n')) {
+      const m = SPEAKER_LINE.exec(line);
+      if (m && !NAME_STOP.has(m[1].trim().toLowerCase())) { out.push(m[1].trim()); continue; }
+      // 문단 가운데 대사: "… 떨렸다. 하린 (calm): "…" (문장 맨 앞 · 띄어쓰기 없는 이름만)
+      for (const s of sentencesOf(line).slice(1)) {
+        const k = SPEAKER_LINE.exec(s);
+        const w = k?.[1].trim();
+        if (w && !/\s/.test(w) && !NAME_STOP.has(w.toLowerCase())) out.push(w);
+      }
+    }
+    return [...new Set(out)];
   }
   function nameCandidates(text) {
     const out = new Map();
@@ -1362,7 +1382,12 @@
     const cands = new Map();
     for (const c of runChunks) for (const [w, n] of nameCandidates(c.text)) cands.set(w, (cands.get(w) ?? 0) + n);
     const ask = [...cands].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([w]) => w);
-    const state = runChunks.map(c => c.text).join('\n').slice(0, 3500);
+    // 배경 글: 조각마다 P번호. 질문은 번호로 가리킨다 (같은 글을 질문마다 또 보내지 않는다). 너무 길면 조각마다 고르게 줄인다
+    const STATE_MAX = 24000;
+    const pText = runChunks.map(c => cleanChunk(c)?.text ?? '');
+    const perP = pText.reduce((a, t) => a + t.length, 0) > STATE_MAX ? Math.max(200, Math.floor(STATE_MAX / Math.max(1, pText.length))) : Infinity;
+    const state = pText.map((t, k) => (t ? `P${k + 1}: ${perP < Infinity ? clip(t, perP) : t}` : '')).filter(Boolean).join('\n');
+    const pid = (c) => `P${runChunks.indexOf(c) + 1}`;
     if (ask.length) {
       const q = {};
       const seen = (w) => { for (const c of runChunks) { const x = sentencesOf(c.text).find(t => t.includes(w)); if (x) return clip(x, 160); } return ''; };
@@ -1387,8 +1412,8 @@
       // 약속한 사람 후보에는 글쓴이도 (예: 내가 쓴 "약속할게."는 내 약속)
       const author = timeline[c.mi]?.role === 'user' ? personaCache : characterCache.name;
       const who = [...new Set([author, ...names].filter(n => n && story.people[n]))];
-      if (who.length && PROMISE_CUE.test(c.text) && threadJobs.length < 5) threadJobs.push({ c, names: who });
-      if (who.length && SECRET_CUE.test(c.text) && secretJobs.length < 4) secretJobs.push({ c, names: who });
+      if (who.length && PROMISE_CUE.test(c.text) && threadJobs.length < 12) threadJobs.push({ c, names: who });
+      if (who.length && SECRET_CUE.test(c.text) && secretJobs.length < 12) secretJobs.push({ c, names: who });
     }
     // 사건 카드: 메시지마다 문장 몇 개 (이름이나 약속 말이 있는 문장 먼저)
     if (settings.cards) for (const mi of mis) {
@@ -1415,15 +1440,15 @@
     const memReveal = memOpen.filter(t => isSecret(t)).slice(-4);
     const q = {};
     pairJobs.forEach((j, i) => {
-      q[`a${i}`] = { type: 'choice', instructions: `In this passage, how do ${j.pr.a} and ${j.pr.b} treat each other? «${clip(j.c.text, 700)}»`, criteria: { closer: 'they grow closer, warmer, or more trusting', apart: 'tension, conflict, coldness, or distrust', none: 'no clear change or they do not really interact' } };
+      q[`a${i}`] = { type: 'choice', instructions: `In this passage, how do ${j.pr.a} and ${j.pr.b} treat each other? (passage ${pid(j.c)})`, criteria: { closer: 'they grow closer, warmer, or more trusting', apart: 'tension, conflict, coldness, or distrust', none: 'no clear change or they do not really interact' } };
       if (j.askType) q[`y${i}`] = { type: 'choice', instructions: `What is the relationship between ${j.pr.a} and ${j.pr.b} in this story?`, criteria: REL_DESC };
       if (j.askType || j.askWho) q[`yw${i}`] = { type: 'choice', instructions: `Between ${j.pr.a} and ${j.pr.b}, who is on the leading side: the one with the crush or obsession, or the parent, master, boss, teacher, senior, or guardian?`, criteria: { A: j.pr.a, B: j.pr.b, none: 'neither, or they are equal' } };
-      if (settings.intim) q[`x${i}`] = { type: 'noul', instructions: `In this passage, did ${j.pr.a} and ${j.pr.b} actually have sex with each other? Count only what happens now in the story, not a memory, dream, fantasy, plan, joke, or refusal. «${clip(j.c.text, 700)}»` };
+      if (settings.intim) q[`x${i}`] = { type: 'noul', instructions: `In this passage, did ${j.pr.a} and ${j.pr.b} actually have sex with each other? Count only what happens now in the story, not a memory, dream, fantasy, plan, joke, or refusal. (passage ${pid(j.c)})` };
     });
     threadJobs.forEach((j, i) => {
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
       j.sents = sents;
-      q[`p${i}`] = { type: 'noul', instructions: `Does someone in this passage promise, agree to, or plan a specific thing to do LATER (after this scene), that has not happened yet? Requests to do something right now, past events, and facts do not count. «${clip(j.c.text, 700)}»` };
+      q[`p${i}`] = { type: 'noul', instructions: `Does someone in this passage promise, agree to, or plan a specific thing to do LATER (after this scene), that has not happened yet? Requests to do something right now, past events, and facts do not count. (passage ${pid(j.c)})` };
       q[`pw${i}`] = { type: 'choice', instructions: 'Who made that promise or has that goal?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
       q[`pt${i}`] = { type: 'choice', instructions: 'Toward whom?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['none', 'nobody in particular']]) };
       q[`ps${i}`] = { type: 'choice', instructions: 'Which sentence states that promise or plan for later?', criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
@@ -1431,7 +1456,7 @@
     secretJobs.forEach((j, i) => {
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
       j.sents = sents;
-      q[`s${i}`] = { type: 'noul', instructions: `Does this passage show someone deliberately keeping a specific secret from someone else (a hidden fact, identity, past, feeling, or plan)? Private thoughts nobody is hiding do not count, and a secret that is being revealed to that person right now does not count. «${clip(j.c.text, 700)}»` };
+      q[`s${i}`] = { type: 'noul', instructions: `Does this passage show someone deliberately keeping a specific secret from someone else (a hidden fact, identity, past, feeling, or plan)? Private thoughts nobody is hiding do not count, and a secret that is being revealed to that person right now does not count. (passage ${pid(j.c)})` };
       q[`sw${i}`] = { type: 'choice', instructions: 'Who keeps that secret?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
       q[`sf${i}`] = { type: 'choice', instructions: 'From whom is it kept hidden?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['everyone', 'everyone else'], ['unclear', 'unclear']]) };
       q[`ss${i}`] = { type: 'choice', instructions: 'Which sentence states what the secret is?', criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
@@ -1645,10 +1670,17 @@
   /** 문장의 명사 후보 (규칙): 괄호 속 말(감정 표시 등) 빼고, 조사가 붙은 단어만, 사람 이름 · 흔한 말 · 감정 말은 뺀다 */
   function tagNouns(s, max = 5) {
     const out = [];
-    for (const raw of String(s).replace(/\([^)]{0,40}\)/g, ' ').split(/\s+/)) {
-      const m = NOUN_PARTICLE.exec(raw.replace(/[^\p{L}\p{N}]/gu, ''));
+    const toks = String(s).replace(/\([^)]{0,40}\)/g, ' ').split(/\s+/).map(x => x.replace(/[^\p{L}\p{N}]/gu, ''));
+    for (const [i, tok] of toks.entries()) {
+      // 하다 동사의 앞 명사: 포기하는 · 요리하기 · 공부하는걸 → 포기 · 요리 · 공부
+      const hv = /^([가-힣]{2,4})(하는|하기|하던|하는걸|하는게|하는것|하기를|하기가)$/u.exec(tok);
+      if (hv) { const w = hv[1]; if (tagWordOk(w) && !peopleIn(w).length && !out.includes(w)) out.push(w); if (out.length >= max) break; continue; }
+      const m = NOUN_PARTICLE.exec(tok);
       if (!m) continue;
-      const w = m[1];
+      let w = m[1];
+      // 바로 앞 낱말이 조사 없는 한글 명사 같으면 붙인다: 천둥 소리는 → 천둥 소리
+      const prev = toks[i - 1] ?? '';
+      if (/^[가-힣]{1,6}$/.test(prev) && !NOUN_PARTICLE.test(prev) && !/(자|다|요|고|며|서|지|게|까지|부터|는|은|을|를|의|에|가|도|만|로)$/u.test(prev) && tagWordOk(prev) && !peopleIn(prev).length && `${prev} ${w}`.length <= 14) w = `${prev} ${w}`;
       if (/^\d+$/.test(w) || !tagWordOk(w) || peopleIn(w).length) continue;
       if (!out.includes(w)) out.push(w);
       if (out.length >= max) break;
@@ -1663,18 +1695,32 @@
     const low = new Set(facts.filter(f => (f.w ?? 3) < 1.5).map(f => unquote(f.sent)));
     const jobs = [];
     const seen = new Set();
-    for (const c of runChunks) for (const s of sentencesOf(c.text)) {
+    const known = (n) => { const p = story.people[n]; return !!p && !p.hidden && !isTitleName(p.name); };
+    let speaker = null;
+    let spMi = -1;
+    for (const c of runChunks) {
+      if (c.mi !== spMi) { speaker = null; spMi = c.mi; }
+      for (const s of sentencesOf(c.text)) {
+      // 화자: "세아 (shy): "…" 처럼 시작하면 따옴표가 닫힐 때까지 이어 받는다
+      const sp = /^([^\s:("“]{1,12})\s*(?:\([^)]{0,20}\))?\s*:/u.exec(s);
+      if (sp) speaker = peopleIn(sp[1]).find(known) ?? null;
+      const cur = speaker;
+      const qn = (s.match(/["“”]/g) ?? []).length;
+      if (sp ? qn % 2 === 0 : qn % 2 === 1) speaker = null;
       const clean = unquote(s);
       if (clean.length < 6 || clean.length > 300 || !TAG_CUE.test(clean) || low.has(clean)) continue;
       const h = fnv(clean);
       if (asked.has(h) || seen.has(h)) continue;
-      const person = peopleIn(clean).find(n => main.has(n));
+      const inS = peopleIn(clean);
+      // 화자 대사면 화자 (다른 인물 이야기가 아니면), 아니면 자주 나온 인물, 아니면 문장 맨 앞 주어
+      const person = (cur && (sp || !inS.some(n => n !== cur)) ? cur : null) ?? inS.find(n => main.has(n)) ?? inS.find(n => known(n) && clean.startsWith(n));
       if (!person) continue;
       const nouns = tagNouns(clean);
       if (!nouns.length) continue;
       seen.add(h);
       const strength = (clean.match(new RegExp(TAG_CUE.source, 'gu')) ?? []).length;
       jobs.push({ c, s: clip(clean, 220), h, person, nouns, strength, opts: Object.fromEntries([...nouns.flatMap((w, k) => [[`p${k}`, `${w} (+)`], [`n${k}`, `${w} (-)`]]), ['none', 'nothing positive or negative for them']]) });
+      }
     }
     return jobs.sort((x, y) => y.strength - x.strength);
   }
@@ -2980,7 +3026,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['상태줄 장소를 더 잘 읽어요: [Nu|날짜|오전|서울 헌터 협회 본부 1층 로비]에서 "Nu" 대신 진짜 장소를, ☆ [Date … | Location: …]처럼 긴 상태줄도 읽어요.', '해설자 카드(여러 인물을 연기하는 봇)면 연출 카드의 캐릭터 자리에 카드 이름 대신 장면에서 가장 많이 나온 인물을 넣어요.', '봇마다 다른 상태창 · 할 일 목록 · 챕터 머리말도 Jev가 "화면 표시"로 알아보고 기억으로 안 만들어요 (모양 규칙에 안 걸리는 형식도). 의미 있는 시스템 메시지(경고 · 벌금 등)는 남겨요.', '"방금 흐름"에 넣을 원문도 기억 고르기 호출에서 같이 물어서, 선택지 메뉴 · 상태창 같은 화면 표시면 빼요.', '상태창 줄([상태 | 날짜 | 돈 …])은 기억 문장 · "방금 흐름"에서 빼요 (설정 › 기억 넣기 › 직접 조절에서 끌 수 있어요). 같은 문장이 여러 메시지에 있으면 가장 최근 것만 써요. 긴 답장 시험에서 필요한 과거가 3/15 → 12/15로 들어왔어요.', '연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 묶음 이름 옆 [+ 카드]로 어느 묶음에든(공포 같은 기본 묶음도) 내 카드를 더해요. 감독 · 얼마나 자주는 한 줄로. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그는 조사가 붙은 단어(바다를 · 흙먼지가)만 명사로 봐요. (happy) 같은 괄호 속 말 · 영어 · 동사 꼴은 빼고, 예전에 쌓인 이상한 태그도 열 때 정리해요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['상태줄 장소를 더 잘 읽어요: [Nu|날짜|오전|서울 헌터 협회 본부 1층 로비]에서 "Nu" 대신 진짜 장소를, ☆ [Date … | Location: …]처럼 긴 상태줄도 읽어요.', '해설자 카드(여러 인물을 연기하는 봇)면 연출 카드의 캐릭터 자리에 카드 이름 대신 장면에서 가장 많이 나온 인물을 넣어요.', '봇마다 다른 상태창 · 할 일 목록 · 챕터 머리말도 Jev가 "화면 표시"로 알아보고 기억으로 안 만들어요 (모양 규칙에 안 걸리는 형식도). 의미 있는 시스템 메시지(경고 · 벌금 등)는 남겨요.', '"방금 흐름"에 넣을 원문도 기억 고르기 호출에서 같이 물어서, 선택지 메뉴 · 상태창 같은 화면 표시면 빼요.', '상태창 줄([상태 | 날짜 | 돈 …])은 기억 문장 · "방금 흐름"에서 빼요 (설정 › 기억 넣기 › 직접 조절에서 끌 수 있어요). 같은 문장이 여러 메시지에 있으면 가장 최근 것만 써요. 긴 답장 시험에서 필요한 과거가 3/15 → 12/15로 들어왔어요.', '연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 묶음 이름 옆 [+ 카드]로 어느 묶음에든(공포 같은 기본 묶음도) 내 카드를 더해요. 감독 · 얼마나 자주는 한 줄로. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그는 조사가 붙은 단어(바다를 · 흙먼지가)만 명사로 봐요. (happy) 같은 괄호 속 말 · 영어 · 동사 꼴은 빼고, 예전에 쌓인 이상한 태그도 열 때 정리해요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.', '이야기 정리가 메시지 8개를 끝까지 봐요 (예전엔 앞 3,500자만). 글은 P1 · P2 번호로 한 번만 보내고 질문은 번호로 가리켜서, 같은 글을 질문마다 또 보내지 않아요. 비밀 · 약속 질문도 한 번에 12개까지.', '기억 쪽에서 잡은 약속 · 비밀도 장면 맨 위에 넣어요. 비밀은 숨기는 사람이 장면에 있을 때만.', '이야기 줄이 넘치면 관계 줄부터 빠져요 (비밀 · 태그 · 약속이 먼저 남아요).', '인물 태그: \"천둥 소리\"처럼 두 낱말 명사, \"포기하는\" → 포기 같은 하다 동사도 잡아요. \"세아 (shy): \"그리고… 나 천둥…\"\"처럼 대사가 이어지면 말하는 사람을 이어 받고, 몇 번 안 나온 인물도 그 사람이 말하거나 주어면 물어요.', '꺼낸 기억에 나온 인물의 태그도 넣어요 (체육관 앞 → 관장이 싫어하는 것).', '문단 가운데 \"하린 (calm): …\" 대사도 인물로 잡아요.', '긴 답장 시험 12 → 15/15 (두 번 연속), 기존 시험 53/55 그대로.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
