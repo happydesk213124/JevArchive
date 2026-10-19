@@ -89,7 +89,7 @@
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
     story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true,
-    dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
+    dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
 
@@ -211,6 +211,7 @@
       dirPacks: Array.isArray(s.dirPacks) ? [...new Set(s.dirPacks.filter(x => typeof x === 'string'))].slice(0, 40) : [...DEFAULT_SETTINGS.dirPacks],
       dirOff: Array.isArray(s.dirOff) ? [...new Set(s.dirOff.filter(x => typeof x === 'string'))].slice(0, 3000) : [],
       dirCustom: sanitizeDirCards(s.dirCustom),
+      dirUserPacks: sanitizeUserPacks(s.dirUserPacks),
       injectMode: s.injectMode === 'system' ? 'system' : 'last_user',
       note: typeof s.note === 'string' ? s.note.trim() : DEFAULT_NOTE,
       showButton: s.showButton !== false,
@@ -1813,21 +1814,41 @@
       while (seen.has(id)) id += 'x';
       seen.add(id);
       const affN = c.aff === null || c.aff === '' || c.aff === undefined ? NaN : Number(c.aff);
-      out.push({ id, pack: 'custom', name, when: s(c.when, 160), text, aff: Number.isFinite(affN) ? Math.max(-10, Math.min(10, Math.round(affN))) : null, promise: c.promise === true });
-      if (out.length >= 300) break;
+      out.push({ id, pack: /^up_[a-z0-9]{2,24}$/.test(c.pack ?? '') ? c.pack : 'custom', name, when: s(c.when, 160), text, aff: Number.isFinite(affN) ? Math.max(-10, Math.min(10, Math.round(affN))) : null, promise: c.promise === true });
+      if (out.length >= 2000) break;
     }
     return out;
+  }
+  /** 내가 만든 묶음: { id: 'up_…', name, icon } */
+  function sanitizeUserPacks(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const p of list) {
+      if (!p || typeof p !== 'object' || !/^up_[a-z0-9]{2,24}$/.test(p.id ?? '') || out.some(x => x.id === p.id)) continue;
+      const name = typeof p.name === 'string' ? p.name.trim().slice(0, 20) : '';
+      if (!name) continue;
+      out.push({ id: p.id, name, icon: typeof p.icon === 'string' && p.icon.trim() ? [...p.icon.trim()].slice(0, 2).join('') : '📁' });
+      if (out.length >= 40) break;
+    }
+    return out;
+  }
+  const isUserPack = (pid) => pid === 'custom' || /^up_/.test(pid ?? '');
+  /** 묶음 목록: 기본 · 장르 · 내 카드 · 내가 만든 묶음 */
+  function packList(cfg = settings) {
+    return [...Object.entries(DIR_PACKS).map(([id, p]) => ({ id, icon: p.icon, name: p.label, desc: p.desc, mine: false })),
+      { id: 'custom', icon: '✍️', name: '내 카드', desc: '내가 쓴 카드', mine: true },
+      ...(cfg.dirUserPacks ?? []).map(p => ({ id: p.id, icon: p.icon, name: p.name, desc: '내가 만든 묶음', mine: true, user: true }))];
   }
   /** 켜 둔 묶음의 카드 전부 (끈 카드 빼고) */
   function allDirCards(cfg = settings, withOff = false) {
     const off = new Set(cfg.dirOff);
     const out = [];
     for (const [pid, p] of Object.entries(DIR_PACKS)) if (cfg.dirPacks.includes(pid)) for (const c of p.cards) out.push(dirCardOf(pid, c));
-    if (cfg.dirPacks.includes('custom')) out.push(...cfg.dirCustom);
+    out.push(...cfg.dirCustom.filter(c => cfg.dirPacks.includes(c.pack ?? 'custom')));
     return withOff ? out : out.filter(c => !off.has(c.id));
   }
   function packCards(pid, cfg = settings) {
-    return pid === 'custom' ? cfg.dirCustom : (DIR_PACKS[pid]?.cards ?? []).map(c => dirCardOf(pid, c));
+    return isUserPack(pid) ? cfg.dirCustom.filter(c => (c.pack ?? 'custom') === pid) : (DIR_PACKS[pid]?.cards ?? []).map(c => dirCardOf(pid, c));
   }
 
   /** {char} {user} {other}를 이름으로. {other}가 필요한데 장면에 다른 인물이 없으면 null */
@@ -2499,7 +2520,7 @@
 
   const ui = {
     open: false, view: 'now', sheet: null, progress: '', test: {}, bound: false, draft: null, onboard: null, saved: '',
-    graph: { x: 0, y: 0, k: 1 }, layout: null, layoutSig: '', search: { q: '', results: null, busy: false, pins: false }, mem: { group: 'date', folder: null, kind: 'all', role: 'all', sort: 'new', limit: 30 },
+    graph: { x: 0, y: 0, k: 1 }, layout: null, layoutSig: '', search: { q: '', results: null, busy: false, pins: false }, cards: { pack: null, q: '', edit: null, newPack: false, packEdit: false }, mem: { group: 'date', folder: null, kind: 'all', role: 'all', sort: 'new', limit: 30 },
     threads: 'open', keepOpen: new Map(), saveTimer: null, peopleQ: '',
   };
 
@@ -2774,6 +2795,24 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 @media (max-width:520px){.tool{padding:12px}}
 .bgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .tagchips{display:flex;flex-wrap:wrap;gap:6px}
+.fold.off{opacity:.55}
+.fold .tg{flex:none;width:38px;height:22px;border-radius:999px;border:0;background:var(--s3);position:relative;cursor:pointer}
+.fold .tg::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--tx3);transition:left .15s}
+.fold .tg.on{background:var(--ac)}
+.fold .tg.on::after{left:19px;background:#fff}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px}
+.ccard{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:14px;background:var(--s1,#141923);border:1px solid var(--line);min-width:0}
+.ccard.off{opacity:.5}
+.ccard .ch2{display:flex;align-items:center;gap:8px}
+.ccard .ch2 b{flex:1;font-size:14px;min-width:0}
+.ccard .when{font-size:12px;color:var(--tx3)}
+.ccard .txt{font-size:13px;color:var(--tx2);line-height:1.55}
+.ccard .acts{display:flex;gap:6px;margin-top:2px}
+.composer{padding:14px;border-radius:14px;border:1px dashed rgba(140,158,255,.45);background:rgba(140,158,255,.05);margin-bottom:12px;display:flex;flex-direction:column;gap:8px}
+.composer .phs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.composer .phs .chip{cursor:pointer;font-family:inherit}
+.newpack{display:flex;gap:6px;flex-wrap:wrap;padding:10px;border-radius:12px;border:1px dashed var(--line)}
+.newpack .inp{min-width:0}
 .tchip{display:inline-flex;align-items:center;border-radius:999px;border:1px solid var(--line);background:var(--s2);font-size:12.5px;overflow:hidden}
 .tchip.pos{border-color:rgba(120,220,160,.35);background:rgba(120,220,160,.08)}
 .tchip.neg{border-color:rgba(255,120,140,.35);background:rgba(255,120,140,.08)}
@@ -2881,11 +2920,11 @@ details.more.danger summary{color:var(--tx2)}
   const avatar = (name, cls = '') => `<span class="av ${cls}" style="--h:${hueOf(name)}">${escapeHtml(String(name ?? '?').trim().slice(0, 1) || '?')}</span>`;
   const kpiBox = (v, label) => `<div class="kpi"><b>${v}</b><span>${label}</span></div>`;
   const secs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}초` : `${ms}ms`);
-  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['news', '업데이트', 'news'], ['settings', '설정', 'settings']];
-  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
+  const VIEWS = [['now', '지금', 'now'], ['people', '인물', 'people'], ['promises', '약속·비밀', 'promise'], ['memory', '기억', 'memory'], ['cards', '연출 카드', 'film'], ['news', '업데이트', 'news'], ['settings', '설정', 'settings']];
+  const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['연출 카드가 탭으로: 묶음 목록(켜기 · 끄기) → 카드. 새 묶음을 만들고(이름 · 아이콘), 카드는 위 칸에 바로 써서 추가해요. 캐릭터 · 나 · 다른 인물 버튼으로 이름 자리 넣기, 카드 찾기, 카드마다 켜기 · 끄기. 폰 아래 탭의 업데이트는 설정 › 앱으로 옮겼어요.', '인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -2938,7 +2977,7 @@ details.more.danger summary{color:var(--tx2)}
     const top = sc.scrollTop;
     const xs = [...document.querySelectorAll('[data-x]')].map(el => [el.dataset.x, el.scrollLeft, el]);
     const st = storageStats();
-    const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, news: renderNews, settings: renderSettings }[ui.view] ?? renderNow)(st);
+    const view = ui.onboard ? renderOnboard() : ({ now: renderNow, people: renderPeople, promises: renderPromises, memory: renderMemory, cards: renderCards, news: renderNews, settings: renderSettings }[ui.view] ?? renderNow)(st);
     const nThreads = openCount(false) + openCount(true);
     const badge = { promises: nThreads > 0, now: !!statusAlerts(st).length, people: settings.story && fixItems().length > 0 };
     const label = escapeHtml([chatLabel.char, chatLabel.chat].filter(Boolean).join(' · '));
@@ -2949,7 +2988,7 @@ details.more.danger summary{color:var(--tx2)}
     setHtml(document.getElementById('ja-top'), `<h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1><span class="sub">${label}</span>${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}<button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>`);
     const tabbar = document.getElementById('ja-tabbar');
     tabbar.style.display = ui.onboard ? 'none' : '';
-    setHtml(tabbar, ui.onboard ? '' : VIEWS.map(([id, lb, ic]) => `<button class="tab${ui.view === id ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic, 22)}${lb}${badge[id] && ui.view !== id ? '<i class="dot"></i>' : ''}</button>`).join(''));
+    setHtml(tabbar, ui.onboard ? '' : VIEWS.filter(([id]) => id !== 'news' || ui.view === 'news').map(([id, lb, ic]) => `<button class="tab${ui.view === id ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic, 22)}${lb}${badge[id] && ui.view !== id ? '<i class="dot"></i>' : ''}</button>`).join(''));
     sc.dataset.view = where;
     setHtml(document.getElementById('ja-wrap'), view);
     sc.scrollTop = keep ? top : 0;
@@ -3407,6 +3446,56 @@ details.more.danger summary{color:var(--tx2)}
     return head + memExplorer();
   }
 
+  // ══ 연출 카드 탭: 묶음(왼쪽 · 폰은 목록) → 카드 (오른쪽 · 폰은 눌러서) ══
+  function renderCards() {
+    const cfg = settings, c = ui.cards, off = new Set(cfg.dirOff);
+    const packs = packList(cfg);
+    if (c.pack && !packs.some(p => p.id === c.pack)) c.pack = null;
+    const sel = c.pack ?? packs[0].id;
+    const cur = packs.find(p => p.id === sel);
+    const head = `<section class="card"><div class="ch"><h2>연출 카드</h2><span class="sp"></span><span class="meta">켜진 카드 ${allDirCards(cfg).length}장 · 지금 장면에 맞는 걸 Jev가 골라요</span></div>
+        <div class="field inline" style="padding-top:0"><div><div class="lb">감독 힌트 · 연출 카드</div><div class="help">${cfg.director ? (cfg.dirCards ? '켜짐: 답장마다 맞는 카드가 있으면 한 줄 넣어요.' : '감독은 켜졌지만 카드는 꺼져 있어요 (설정 › 이야기).') : '감독 힌트가 꺼져 있어요. 켜야 카드를 써요.'}</div></div>${sw('director', cfg.director, 'quick')}</div>
+        <div class="seg" style="margin-top:6px">${Object.entries(DIR_FREQ_KO).map(([k, [t, sub]]) => `<button class="${cfg.dirFreq === k ? 'on' : ''}" data-act="dirfreq" data-v="${k}">${t}<small>${sub}</small></button>`).join('')}</div>
+      </section>`;
+    const fold = packs.map(p => { const n = packCards(p.id, cfg).length, on = cfg.dirPacks.includes(p.id); return `<div class="fold${sel === p.id ? ' on' : ''}${on ? '' : ' off'}" role="button" tabindex="0" data-act="cpack" data-v="${p.id}"><span class="ic">${escapeHtml(p.icon)}</span><div class="t"><b>${escapeHtml(p.name)}</b><span>${n}장 · ${escapeHtml(p.desc)}</span></div><button class="tg${on ? ' on' : ''}" data-act="dirpack" data-v="${p.id}" aria-label="${on ? '끄기' : '켜기'}" title="${on ? '이 묶음 쓰는 중 · 누르면 끄기' : '꺼짐 · 누르면 켜기'}"></button></div>`; }).join('');
+    const newPack = c.newPack
+      ? `<div class="newpack"><input class="inp" id="np-icon" maxlength="2" placeholder="📁" style="width:52px;text-align:center"><input class="inp" id="np-name" maxlength="20" placeholder="묶음 이름 (예: 학원물)" style="flex:1"><button class="btn sm p" data-act="pack-create">만들기</button><button class="btn sm g" data-act="pack-new-cancel">취소</button></div>`
+      : '<button class="btn g block" data-act="pack-new">+ 새 묶음</button>';
+    const q = c.q.trim();
+    let list = packCards(sel, cfg);
+    if (q) list = list.filter(x => `${x.name} ${x.when} ${x.text}`.includes(q));
+    const editing = c.edit ? cfg.dirCustom.find(x => x.id === c.edit) : null;
+    const composer = !cur?.mine ? '' : `<div class="composer">
+          <div class="lb">${editing ? '카드 고치기' : '새 카드'}</div>
+          <input class="inp" id="cc-name" maxlength="40" placeholder="이름 (예: 말없는 질투)" value="${escapeHtml(editing?.name ?? '')}">
+          <textarea class="inp" id="cc-text" rows="3" maxlength="400" placeholder="연출: {char}가 괜히 말수가 줄어든다. 이유는 말하지 않는다.">${escapeHtml(editing?.text ?? '')}</textarea>
+          <div class="phs"><span class="xs dim">넣기</span><button class="chip" data-act="ph-insert" data-v="{char}">캐릭터</button><button class="chip" data-act="ph-insert" data-v="{user}">나</button><button class="chip" data-act="ph-insert" data-v="{other}">다른 인물</button><span class="xs dim">· 조사는 알아서 맞춰요</span></div>
+          <details class="more"${keepOpen('cc-more', !!(editing?.when || editing?.aff != null))}><summary>언제 쓸지 · 조건 (선택)</summary>
+            <input class="inp" id="cc-when" maxlength="160" placeholder="언제 (예: {other}가 {user} 곁에 있을 때)" value="${escapeHtml(editing?.when ?? '')}" style="margin-top:6px">
+            <input class="inp" id="cc-aff" type="number" inputmode="numeric" min="-10" max="10" placeholder="가까움 조건 (예: 3 = 3 이상일 때만, 비우면 없음)" value="${editing?.aff ?? ''}" style="margin-top:6px">
+          </details>
+          <div class="row" style="justify-content:flex-end;gap:6px">${editing ? '<button class="btn sm g" data-act="card-cancel">취소</button>' : ''}<button class="btn sm p" data-act="card-save">${editing ? '저장' : '추가'}</button></div>
+        </div>`;
+    const cards = list.length ? `<div class="cgrid">${list.map(x => { const isOff = off.has(x.id); return `<div class="ccard${isOff ? ' off' : ''}"><div class="ch2"><b>${escapeHtml(x.name)}</b>${x.aff != null ? `<span class="tag">${x.aff >= 0 ? `가까움 ${x.aff}+` : `사이 나쁨 ${x.aff}↓`}</span>` : ''}<button class="tg-s btn sm ${isOff ? '' : 'g'}" data-act="card-toggle" data-id="${escapeHtml(x.id)}">${isOff ? '꺼짐' : '켜짐'}</button></div>${x.when ? `<div class="when">언제 · ${ph(x.when)}</div>` : ''}<div class="txt">${ph(x.text)}</div>${cur?.mine ? `<div class="acts"><button class="btn sm g" data-act="card-edit" data-id="${escapeHtml(x.id)}">고치기</button><button class="btn sm g" data-act="card-del" data-id="${escapeHtml(x.id)}">지우기</button></div>` : ''}</div>`; }).join('')}</div>`
+      : `<div class="empty small">${q ? '찾는 카드가 없어요.' : cur?.mine ? '아직 카드가 없어요. 위에서 하나 써 보세요.' : '카드가 없어요.'}</div>`;
+    const packHead = c.packEdit && cur?.user
+      ? `<div class="newpack" style="margin-bottom:10px"><input class="inp" id="pe-icon" maxlength="2" value="${escapeHtml(cur.icon)}" style="width:52px;text-align:center"><input class="inp" id="pe-name" maxlength="20" value="${escapeHtml(cur.name)}" style="flex:1"><button class="btn sm p" data-act="pack-save">저장</button><button class="btn sm g" data-act="pack-edit-cancel">취소</button></div>`
+      : `<div class="crumb"><button class="back" data-act="cback">‹ 묶음</button><b>${escapeHtml(cur?.icon ?? '')} ${escapeHtml(cur?.name ?? '')}</b><span>· ${packCards(sel, cfg).length}장${cfg.dirPacks.includes(sel) ? '' : ' · 꺼짐'}</span><span class="sp"></span>${cur?.user ? '<button data-act="pack-edit">이름 바꾸기</button><button data-act="pack-del">묶음 지우기</button>' : ''}</div>`;
+    const io = !cur?.mine ? '' : `<details class="more"${keepOpen('dir-io', false)}><summary>가져오기 · 내보내기 (JSON)</summary>
+        <div class="help" style="margin:6px 0">카드 묶음(JSON)을 붙여 넣고 가져오기를 누르면 이 묶음에 더해져요. 친구와 나눌 땐 아래 글을 복사하세요.</div>
+        <textarea class="inp" id="dc-json" rows="5" spellcheck="false">${escapeHtml(JSON.stringify(packCards(sel, cfg).map(({ name, when, text, aff, promise }) => ({ name, when, text, ...(aff != null ? { aff } : {}), ...(promise ? { promise } : {}) })), null, 1))}</textarea>
+        <div class="row" style="margin-top:8px"><button class="btn" data-act="dir-import">가져오기</button><button class="btn g" data-act="dir-copy">복사</button></div></details>`;
+    return `${head}
+      <div class="mx${c.pack ? ' in' : ''}" style="margin-top:14px">
+        <aside class="mfold">${fold}${newPack}</aside>
+        <section class="mcont">
+          ${packHead}
+          <div class="search" style="margin-bottom:10px">${icon('search', 18)}<input id="cq" placeholder="카드 찾기" value="${escapeHtml(c.q)}" autocomplete="off"></div>
+          ${composer}${cards}${io}
+        </section>
+      </div>`;
+  }
+
   // ══ 시트: 인물 · 기억 ══
   function renderSheet() {
     const s = ui.sheet;
@@ -3554,7 +3643,7 @@ details.more.danger summary{color:var(--tx2)}
       <div class="row" style="margin-top:10px"><button class="btn" data-act="test-embed">연결 테스트</button>${testLine('embed')}</div>`;
   }
   function packChips(cfg, act, cur) {
-    const packs = [...Object.entries(DIR_PACKS).map(([k, p]) => [k, p.icon, p.label, p.cards.length]), ['custom', '✍️', '내 카드', cfg.dirCustom.length]];
+    const packs = packList(cfg).map(p => [p.id, p.icon, p.name, packCards(p.id, cfg).length]);
     return packs.map(([k, ic, label, n]) => `<button class="pk${(cur ? cur === k : cfg.dirPacks.includes(k)) ? ' on' : ''}${!cur || cfg.dirPacks.includes(k) ? '' : ' dim'}" data-act="${act}" data-v="${k}">${ic} ${escapeHtml(label)}<small>${n}</small></button>`).join('');
   }
   function renderSettings(st) {
@@ -3599,7 +3688,7 @@ details.more.danger summary{color:var(--tx2)}
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
         <div class="field"><label>Jev 가격 (100만 토큰당 달러)</label><div class="help">"지금" 탭의 예상 비용 계산에만 써요.</div><div class="row" style="gap:6px;margin-top:8px"><span class="dim">$</span><input class="inp" type="number" inputmode="decimal" step="any" min="0" data-field="jevPrice" value="${escapeHtml(d.jevPrice)}" style="max-width:110px"><button class="btn sm g" data-act="usage-reset">사용량 초기화</button></div></div>
         <div class="field inline"><div><label>JevArchive 사용</label><div class="help">끄면 요청을 건드리지 않아요.</div></div>${sw('enabled', d.enabled)}</div>
-        <div class="row" style="margin-top:8px"><button class="btn g" data-act="onboard">시작 안내 다시 보기</button><button class="btn g" data-act="settings-reset">기본값으로</button></div>
+        <div class="row" style="margin-top:8px"><button class="btn g" data-act="go" data-view="news">업데이트 내역</button><button class="btn g" data-act="onboard">시작 안내 다시 보기</button><button class="btn g" data-act="settings-reset">기본값으로</button></div>
       </section>
       <section class="card"><div class="ch"><h2>정리</h2><span class="sp"></span><span class="meta">${st.storyLeft ? `남은 메시지 ${st.storyLeft}개` : '다 정리됐어요'}</span></div>
         ${ui.progress ? `<div class="small" style="margin-bottom:10px">${escapeHtml(ui.progress)}<div class="progress"><i style="width:${ui.progressPct ?? 30}%"></i></div></div>` : ''}
@@ -3737,6 +3826,7 @@ details.more.danger summary{color:var(--tx2)}
     globalThis.addEventListener?.('resize', () => { const w = wide(); if (w !== lastWide) { lastWide = w; if (ui.view === 'people') softRender(); } });
     document.body.addEventListener('toggle', (e) => { const k = e.target?.dataset?.keep; if (k) ui.keepOpen.set(k, e.target.open); }, true);
     document.body.addEventListener('input', (e) => {
+      if (e.target.id === 'cq') { ui.cards.q = e.target.value; clearTimeout(ui.cqTimer); ui.cqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('cq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'pq') { ui.peopleQ = e.target.value; clearTimeout(ui.pqTimer); ui.pqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('pq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'mq') { ui.search.q = e.target.value; return; }
       if (['budget', 'candidates', 'neighbor', 'tailTokens'].includes(e.target.dataset?.field)) {
@@ -3828,6 +3918,83 @@ details.more.danger summary{color:var(--tx2)}
       case 'spoil': el.classList.toggle('show'); return;
       case 'go-secrets': await leaveSettings(); ui.view = 'promises'; ui.tkind = 'secret'; ui.threads = 'open'; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
+      case 'cpack': Object.assign(ui.cards, { pack: el.dataset.v, edit: null, packEdit: false }); render(); document.getElementById('sc').scrollTop = 0; return;
+      case 'cback': ui.cards.pack = null; render(); return;
+      case 'ph-insert': {
+        const ta = document.getElementById('cc-text');
+        if (!ta) return;
+        const a = ta.selectionStart ?? ta.value.length, b = ta.selectionEnd ?? a;
+        ta.value = ta.value.slice(0, a) + el.dataset.v + ta.value.slice(b);
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = a + el.dataset.v.length;
+        return;
+      }
+      case 'card-toggle': {
+        const id = el.dataset.id, off = new Set(settings.dirOff);
+        if (off.has(id)) off.delete(id); else off.add(id);
+        const card = el.closest('.ccard');
+        card?.classList.toggle('off', off.has(id));
+        el.textContent = off.has(id) ? '꺼짐' : '켜짐';
+        el.classList.toggle('g', !off.has(id));
+        settings.dirOff = [...off];
+        void patchSettings({ dirOff: [...off] });
+        return;
+      }
+      case 'card-save': {
+        const v = (id) => document.getElementById(id)?.value?.trim() ?? '';
+        const card = { name: v('cc-name'), when: v('cc-when'), text: v('cc-text'), aff: v('cc-aff') };
+        if (!card.name || !card.text) { toast('이름과 연출은 꼭 써 주세요.'); return; }
+        const pack = ui.cards.pack ?? 'custom';
+        const editId = ui.cards.edit;
+        const list = editId ? settings.dirCustom.map(x => (x.id === editId ? { ...x, ...card, id: editId } : x)) : [...settings.dirCustom, { ...card, pack, id: `u${Date.now().toString(36)}` }];
+        await patchSettings({ dirCustom: list, dirPacks: [...new Set([...settings.dirPacks, pack])] });
+        ui.cards.edit = null;
+        render();
+        toast(editId ? '고쳤어요.' : '추가했어요. 장면이 맞으면 Jev가 골라요.');
+        if (!editId) document.getElementById('cc-name')?.focus();
+        return;
+      }
+      case 'card-edit': ui.cards.edit = el.dataset.id; render(); document.querySelector('.composer')?.scrollIntoView({ block: 'center', behavior: 'smooth' }); return;
+      case 'card-cancel': ui.cards.edit = null; render(); return;
+      case 'card-del': {
+        const c = settings.dirCustom.find(x => x.id === el.dataset.id);
+        if (!c || !await confirmDialog(`"${c.name}" 카드를 지울까요?`, '지우기', true)) return;
+        await patchSettings({ dirCustom: settings.dirCustom.filter(x => x.id !== c.id) });
+        render();
+        return;
+      }
+      case 'pack-new': ui.cards.newPack = true; render(); document.getElementById('np-name')?.focus(); return;
+      case 'pack-new-cancel': ui.cards.newPack = false; render(); return;
+      case 'pack-create': {
+        const name = document.getElementById('np-name')?.value?.trim() ?? '';
+        if (!name) { toast('묶음 이름을 써 주세요.'); return; }
+        const id = `up_${Date.now().toString(36)}`;
+        await patchSettings({ dirUserPacks: [...(settings.dirUserPacks ?? []), { id, name, icon: document.getElementById('np-icon')?.value?.trim() || '📁' }], dirPacks: [...new Set([...settings.dirPacks, id])] });
+        Object.assign(ui.cards, { newPack: false, pack: id, edit: null });
+        render();
+        document.getElementById('cc-name')?.focus();
+        return;
+      }
+      case 'pack-edit': ui.cards.packEdit = true; render(); return;
+      case 'pack-edit-cancel': ui.cards.packEdit = false; render(); return;
+      case 'pack-save': {
+        const name = document.getElementById('pe-name')?.value?.trim() ?? '';
+        if (!name) { toast('묶음 이름을 써 주세요.'); return; }
+        await patchSettings({ dirUserPacks: (settings.dirUserPacks ?? []).map(p => (p.id === ui.cards.pack ? { ...p, name, icon: document.getElementById('pe-icon')?.value?.trim() || p.icon } : p)) });
+        ui.cards.packEdit = false;
+        render();
+        return;
+      }
+      case 'pack-del': {
+        const p = (settings.dirUserPacks ?? []).find(x => x.id === ui.cards.pack);
+        if (!p) return;
+        const n = settings.dirCustom.filter(c => c.pack === p.id).length;
+        if (!await confirmDialog(`"${p.name}" 묶음${n ? `과 카드 ${n}장` : ''}을 지울까요?`, '지우기', true)) return;
+        await patchSettings({ dirUserPacks: settings.dirUserPacks.filter(x => x.id !== p.id), dirCustom: settings.dirCustom.filter(c => c.pack !== p.id), dirPacks: settings.dirPacks.filter(x => x !== p.id) });
+        ui.cards.pack = null;
+        render();
+        return;
+      }
       case 'tag-del': { const m = story.tags?.[el.dataset.name]; if (m) { delete m[el.dataset.w]; saveStory(); render(); toast(`태그 "${el.dataset.w}"를 지웠어요.`); } return; }
       case 'relmerge': { const { from, into } = el.dataset; if (await confirmDialog(`${josa(from, '을', '를')} ${josa(into, '과', '와')} 같은 사람으로 합칠까요?\n${josa(from, '은', '는')} ${into}의 다른 이름이 되고, 관계 · 횟수도 합쳐져요.`, '합치기')) { mergePeople(from, into); ui.sheet = { type: 'person', name: into }; ui.layout = null; render(); toast(`${josa(from, '을', '를')} 합쳤어요.`); } return; }
       case 'pstep': { const inp = document.getElementById('jev-par'); if (inp) { inp.value = String(Math.max(1, Math.min(10, (Number(inp.value) || 2) + Number(el.dataset.d)))); scheduleSettingsSave(400); if (ui.onboard) ui.onboard.d = readForm(ui.onboard.d); } return; }
@@ -3851,7 +4018,7 @@ details.more.danger summary{color:var(--tx2)}
       case 'gzoom': { const f = Number(el.dataset.f); const g = ui.graph; const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
       case 'greset': ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
-      case 'dircards': ui.sheet = { type: 'dircards', pack: 'basic', edit: null }; render(); return;
+      case 'dircards': ui.sheet = null; ui.view = 'cards'; render(); document.getElementById('sc').scrollTop = 0; return;
       case 'dsheet-pack': ui.sheet = { ...ui.sheet, pack: el.dataset.v, edit: null }; render(); return;
       case 'dirfreq': {
         for (const b of el.parentElement.children) b.classList.toggle('on', b === el);
@@ -3864,7 +4031,8 @@ details.more.danger summary{color:var(--tx2)}
       case 'dirpack': {
         const packs = new Set(settings.dirPacks);
         if (packs.has(el.dataset.v)) packs.delete(el.dataset.v); else packs.add(el.dataset.v);
-        if (el.classList.contains('pk')) el.classList.toggle('on', packs.has(el.dataset.v));
+        if (el.classList.contains('pk') || el.classList.contains('tg')) el.classList.toggle('on', packs.has(el.dataset.v));
+        el.closest('.fold')?.classList.toggle('off', !packs.has(el.dataset.v));
         settings.dirPacks = [...packs];
         if (ui.draft) ui.draft.dirPacks = [...packs];
         setSaved('저장 중…');
@@ -3903,9 +4071,10 @@ details.more.danger summary{color:var(--tx2)}
         try { data = JSON.parse(document.getElementById('dc-json')?.value ?? ''); } catch { toast('JSON 모양이 아니에요.'); return; }
         const incoming = sanitizeDirCards(Array.isArray(data) ? data : data?.cards);
         const have = new Set(settings.dirCustom.map(c => `${c.name}|${c.text}`));
-        const fresh = incoming.filter(c => !have.has(`${c.name}|${c.text}`)).map((c, i) => ({ ...c, id: `u${Date.now().toString(36)}${i}` }));
+        const intoPack = ui.view === 'cards' && isUserPack(ui.cards.pack) ? ui.cards.pack : 'custom';
+        const fresh = incoming.filter(c => !have.has(`${c.name}|${c.text}`)).map((c, i) => ({ ...c, pack: intoPack, id: `u${Date.now().toString(36)}${i}` }));
         if (!fresh.length) { toast('새로 더할 카드가 없어요.'); return; }
-        await patchSettings({ dirCustom: [...settings.dirCustom, ...fresh], dirPacks: [...new Set([...settings.dirPacks, 'custom'])] });
+        await patchSettings({ dirCustom: [...settings.dirCustom, ...fresh], dirPacks: [...new Set([...settings.dirPacks, intoPack])] });
         toast(`카드 ${fresh.length}장을 더했어요.`);
         render();
         return;
