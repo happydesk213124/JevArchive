@@ -3786,12 +3786,11 @@ details.more.danger summary{color:var(--tx2)}
     return out;
   }
 
-  function makeNodeSim(gr, pick, sig, prev) {
-    const old = new Map((prev?.nodes ?? []).map(n => [n.id, n]));
+  /** 자리는 고른 마디만 보고 정한다 (이전 화면 자리를 안 물려받음): 같은 마디면 언제 열어도 같은 모양 */
+  function makeNodeSim(gr, pick, sig) {
     const max = Math.max(1, ...pick.map(nd => nd.sents.length));
     const nodes = pick.map((nd, i) => {
-      const o = old.get(nd.label);
-      return { id: nd.label, kind: nd.kind, hue: hueOf(nd.label), bg: nodeIsCommon(nd, gr), count: nd.sents.length, rank: i, r: 12 + Math.sqrt(nd.sents.length / max) * 16, x: o?.x, y: o?.y, kids: 0 };
+      return { id: nd.label, kind: nd.kind, hue: hueOf(nd.label), bg: nodeIsCommon(nd, gr), count: nd.sents.length, rank: i, r: 12 + Math.sqrt(nd.sents.length / max) * 16, x: null, y: null, kids: 0 };
     });
     const byId = new Map(nodes.map(n => [n.id, n]));
     const eset = new Map();
@@ -3915,7 +3914,7 @@ details.more.danger summary{color:var(--tx2)}
   function bindNodeMapNow(cv) {
     const { gr, pick } = nodeMapPick();
     const sig = `${gr.key}|${pick.length}|${pick[0]?.label ?? ''}|${pick[pick.length - 1]?.label ?? ''}|${ui.nodesQ ?? ''}|${ui.nodesBg ? 1 : 0}`;
-    if (!ui.nsim || ui.nsim.sig !== sig) { ui.nsim = makeNodeSim(gr, pick, sig, ui.nsim); ui.ncamUser = false; }
+    if (!ui.nsim || ui.nsim.sig !== sig) { ui.nsim = makeNodeSim(gr, pick, sig); ui.ncamUser = false; }
     const sim = ui.nsim;
     sim.cv = cv;
     if (!cv.__bound) {
