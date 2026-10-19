@@ -927,6 +927,7 @@
     return out.length > 1 ? out : [];
   }
   const MEM_LEGEND = 'Memory lines (auto-extracted from the original words, may be rough): kind/who/with/whom/when/where/what/how/why, X=empty; kind E=event A=action F=fact P=promise S=secret. Promise and secret lines start at who.';
+  const kwDf = { n: -1, m: new Map() };
   async function recall(windowEntries, tr) {
     const cfg = settings;
     const limitMi = timeline.length - windowEntries.length;
@@ -999,6 +1000,26 @@
       first.slice(0, 6).forEach((f, i) => levels.set(f.id, 2 - i * 0.01));
     }
     const scored = [...levels].map(([id, lv]) => ({ f: facts[id], lv })).filter(x => x.f && x.lv >= KEEP_LEVEL).sort((a, b) => b.lv - a.lv || b.f.id - a.f.id);
+    const EXP = globalThis.__JA_EXP ?? {};
+    // 새 값 따라오기: 넣기로 한 문장과 드문 낱말(이 채팅에서 4문장 이하)을 같이 쓰는 "나중" 문장은 문턱(1.5) 아래여도 같이 넣는다.
+    //  예전 값만 들어가고 바뀐 값이 빠지는 걸 막는다 (배지 두 개 → 세 번째 배지). 흔한 낱말(광장 · 길가)로는 안 끌려온다
+    if (EXP.newer ?? 1) {
+      const kw = (t) => new Set(String(t).split(/\s+/).map(w => w.replace(/[^\p{L}\p{N}]/gu, '').replace(/(에서는|에게는|에서|에게|으로|이랑|하고|까지|부터|처럼|보다|은|는|이|가|을|를|의|에|와|과|도|만|로)$/u, '')).filter(w => w.length >= 2));
+      // 낱말이 나오는 문장 수 (같은 문장은 한 번). 드문 낱말만 "같은 이야기"의 근거로 쓴다
+      if (kwDf.n !== facts.length) { kwDf.m = new Map(); const seen = new Set(); for (const f of facts) { if (seen.has(f.sent)) continue; seen.add(f.sent); for (const w of kw(f.sent)) kwDf.m.set(w, (kwDf.m.get(w) ?? 0) + 1); } kwDf.n = facts.length; }
+      const rare = (w) => (kwDf.m.get(w) ?? 0) <= (EXP.newerDf ?? 4) && !peopleIn(w).length;
+      const kept = new Set(scored.map(x => x.f.id));
+      for (const x of [...scored]) {
+        const kx = new Set([...kw(x.f.sent)].filter(rare));
+        if (!kx.size) continue;
+        for (const [id, lv] of levels) {
+          const f = facts[id];
+          if (!f || kept.has(id) || f.mi <= x.f.mi || lv < (EXP.newerMin ?? 1.0)) continue;
+          // 끌려온 문장은 이웃을 안 데려온다 (2점 아래로)
+          if ([...kw(f.sent)].some(w => kx.has(w))) { scored.push({ f, lv: Math.min(x.lv - 0.01, 1.9) }); kept.add(id); }
+        }
+      }
+    }
 
     // 이야기 줄은 예산의 30%까지 (형식 설명은 아래에서 한 번만)
     const recalledNames = settings.story ? [...new Set(scored.slice(0, 8).flatMap(x => peopleIn(x.f.sent ?? '')))] : [];
@@ -2508,7 +2529,20 @@
     const books = new Map();
     for (const [id, sc] of fs) { const f = facts[id]; const b = books.get(f.mi) ?? { mi: f.mi, score: 0, upd: false }; b.score = Math.max(b.score, sc); books.set(f.mi, b); }
     for (const b of books.values()) { b.upd = factsOfMessage(b.mi).some(f => f.upd); if (wantUpd && b.upd) b.score *= 1.3; }
-    const picked = [...books.values()].filter(b => !exclude.has(b.mi)).sort((a, b) => b.score - a.score).slice(0, nMsg);
+    let picked = [...books.values()].filter(b => !exclude.has(b.mi)).sort((a, b) => b.score - a.score).slice(0, nMsg);
+    const EXP = globalThis.__JA_EXP ?? {};
+    // 자리 보장: 내 메시지와 뜻이 가장 가까운 문장의 메시지 2개는 꼭 넣는다.
+    //  직전 긴 답장(서술 위주)으로 찾은 갈래들이 점수를 모아 가면, 내 메시지 1 · 2위 문장이 묻혀 8권 밖으로 밀렸다 (긴 답장 시험 T66 · T68)
+    if ((EXP.reserve ?? 2) || EXP.reserveLex) {
+      const res = [];
+      const take = (ids, k) => { let n = 0; for (const id of ids) { if (n >= k) break; const mi = facts[id].mi; if (exclude.has(mi) || res.includes(mi)) continue; res.push(mi); n++; } };
+      take((semLists[0]?.[1] ?? []).map(([id]) => id), EXP.reserve ?? 2);
+      take(lex.map(([id]) => id), EXP.reserveLex ?? 0);
+      const rest = [...books.values()].filter(b => !exclude.has(b.mi) && !res.includes(b.mi)).sort((a, b) => b.score - a.score);
+      picked = [...res.map(mi => books.get(mi)), ...rest].slice(0, nMsg + (EXP.extra ?? 0));
+    }
+    // 벤치 진단용 (평소엔 없음)
+    globalThis.__JA_DIAG?.({ sem: semLists.map(([, l]) => l.map(([id]) => id)), lex: lex.map(([id]) => id), names: nameList.map(f => f.id), books: [...books.values()].filter(b => !exclude.has(b.mi)).sort((a, b) => b.score - a.score).map(b => b.mi), picked: picked.map(b => b.mi), nMsg, pool: pool.length });
     const out = [];
     for (const b of picked) {
       // 같은 문장이 더 최근 메시지에도 있으면 이 메시지에서는 빼고 (딸려 들어와 자리를 먹지 않게)
@@ -3048,7 +3082,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.1', '2026-10-19', ['"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)']],
+    ['1.0.1', '2026-10-19', ['"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
   ];
   const needsSetup = () => !settings.onboarded || !settings.jevKey;
