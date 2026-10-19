@@ -198,6 +198,8 @@
       cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
+      memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
       jevParallel: clampNum(s.jevParallel, 2, 1, 10),
       jevPrice: Number.isFinite(Number(s.jevPrice)) && Number(s.jevPrice) >= 0 && s.jevPrice !== '' && s.jevPrice != null ? Number(s.jevPrice) : 0.042,
       memForm: s.memForm === 'slots' ? 'slots' : 'sentence',
@@ -2742,7 +2744,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접).', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -3352,7 +3354,7 @@ details.more.danger summary{color:var(--tx2)}
       <div class="card">${[['film', '원문 그대로 기억', 'Risu가 못 보내는 옛날 대화를 조각으로 색인해 두고, 지금 필요한 것만 찾아 넣어요.'], ['people', '인물 · 관계 · 약속', '누가 누구와 가까워졌는지, 어떤 약속이 남았는지 알아서 정리해요.'], ['spark', '감독 힌트 (선택)', '템포 · 꺼낼 약속 · 분위기를 짧게 귀띔해서 이야기가 살아 있게.'], ['db', '가볍게', '서버 없이 플러그인 하나. 폰에서도 돼요. 원문은 Risu 채팅 그대로라 따로 저장하지 않아요.']].map(([ic, t, dsc]) => `<div class="feat"><span class="ic">${icon(ic)}</span><div><b>${t}</b><div class="small muted">${dsc}</div></div></div>`).join('')}</div>${nav(false, 'onb-next', '시작하기')}</div>`;
     if (o.step === 1) return `<div class="onb">${steps}<h2>Jev 연결</h2><p class="lead">Jev는 글을 쓰지 않고 "이 조각이 지금 필요해?"만 판단하는 아주 싼 모델이에요.</p><div class="card">${jevFields(d)}</div>${nav(true, 'onb-next')}</div>`;
     if (o.step === 2) return `<div class="onb">${steps}<h2>임베딩</h2><p class="lead">뜻이 비슷한 대화를 빠르게 찾는 데 써요. 모르겠으면 첫 번째를 고르세요.</p><div class="card">${embedFields(d)}</div>${nav(true, 'onb-next')}</div>`;
-    const cur = presetOf(d);
+    const cur = d.memPreset ?? presetOf(d);
     return `<div class="onb">${steps}<h2>기억하는 방식</h2><p class="lead">나중에 설정에서 언제든 바꿀 수 있어요.</p>
       <div class="card"><div class="lb" style="font-weight:600;margin-bottom:8px">얼마나 넣을까요?</div>${presetSeg(cur)}
         <div class="field inline" style="margin-top:8px"><div><div class="lb">인물 · 관계 · 약속 기록</div><div class="help">보낸 뒤 뒤에서 정리해요. 보내기는 느려지지 않아요.</div></div>${sw('story', d.story)}</div>
@@ -3418,7 +3420,7 @@ details.more.danger summary{color:var(--tx2)}
     const num = (k, min, max) => `<input class="inp" type="number" inputmode="numeric" min="${min}" max="${max}" data-field="${k}" value="${escapeHtml(d[k])}" style="max-width:140px">`;
     const jp = JEV_PRESETS[d.jevPreset], ep = EMBED_PRESETS[d.embedPreset];
     const dot = (t) => (t?.ok ? '<span class="pill ok"><i></i>연결됨</span>' : t && !t.running && !t.ok ? '<span class="pill bad"><i></i>실패</span>' : '');
-    const cur = presetOf(d);
+    const cur = d.memPreset ?? presetOf(d);
     const sendTraces = debugLog.slice(0, 8);
     return `<section class="card"><div class="ch"><h2>연결</h2></div>
         <details class="more" style="border:0;margin:0;padding:0"${keepOpen('conn-jev', !d.jevKey)}><summary><span style="flex:1"><b style="color:var(--tx)">Jev</b> <span class="dim">· ${escapeHtml(jp.label)} · ${escapeHtml(d.jevModel || jp.model)}</span></span>${d.jevKey ? '' : '<span class="pill bad"><i></i>키 없음</span>'}${dot(ui.test.jev)}</summary>${jevFields(d)}</details>
@@ -3593,6 +3595,14 @@ details.more.danger summary{color:var(--tx2)}
     document.body.addEventListener('input', (e) => {
       if (e.target.id === 'pq') { ui.peopleQ = e.target.value; clearTimeout(ui.pqTimer); ui.pqTimer = setTimeout(() => { const pos = e.target.selectionStart; render(); const el = document.getElementById('pq'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }, 200); return; }
       if (e.target.id === 'mq') { ui.search.q = e.target.value; return; }
+      if (['budget', 'candidates', 'neighbor', 'tailTokens'].includes(e.target.dataset?.field)) {
+        const d = ui.onboard ? (ui.onboard.d = readForm(ui.onboard.d)) : (ui.draft = readForm(ui.draft ?? settings));
+        d.memPreset = 'custom';
+        d.memCustom = Object.fromEntries(['budget', 'candidates', 'neighbor', 'tailTokens'].map(k => [k, Number(d[k])]));
+        for (const b of document.querySelectorAll('[data-act="preset"],[data-act="preset-custom"]')) b.classList.toggle('on', b.dataset.act === 'preset-custom');
+        const meta = e.target.closest('.card')?.querySelector('.ch .meta');
+        if (meta) meta.textContent = `최대 ${d.budget}토큰 · 후보 ${d.candidates}개`;
+      }
       if (e.target.dataset?.field && ui.view === 'settings' && !ui.onboard) scheduleSettingsSave(800);
     });
     document.body.addEventListener('keydown', (e) => {
@@ -3761,7 +3771,10 @@ details.more.danger summary{color:var(--tx2)}
         return;
       }
       case 'preset-custom': {
+        const base = currentDraft();
+        const next = { ...base, memPreset: 'custom', ...(base.memCustom ?? {}) };
         ui.keepOpen.set('adv-mem', true);
+        if (ui.onboard) ui.onboard.d = next; else { ui.draft = next; void flushSettingsSave(); }
         render();
         document.querySelector('[data-keep="adv-mem"]')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
         return;
@@ -3770,7 +3783,7 @@ details.more.danger summary{color:var(--tx2)}
         const p = MEMORY_PRESETS[el.dataset.v];
         if (!p) return;
         const base = currentDraft();
-        const next = { ...base, budget: p.budget, candidates: p.candidates, neighbor: p.neighbor, tailTokens: p.tailTokens };
+        const next = { ...base, memPreset: el.dataset.v, budget: p.budget, candidates: p.candidates, neighbor: p.neighbor, tailTokens: p.tailTokens };
         if (ui.onboard) { ui.onboard.d = next; render(); return; }
         ui.draft = next;
         render();
