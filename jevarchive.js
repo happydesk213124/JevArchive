@@ -3088,6 +3088,10 @@ svg.graph:active{cursor:grabbing}
 .graph .node .lbl{font-size:14px;font-weight:600;fill:#c6cbe0}
 .graph .node{cursor:pointer}
 .graph .bgnode{opacity:.5}
+.nmapwrap{position:relative;padding:4px 8px 0}
+.nmap{display:block;width:100%;height:min(68vh,620px);min-height:340px;touch-action:none;cursor:grab;border-radius:12px;background:var(--bg2)}
+.nmap:active{cursor:grabbing}
+.nmapstat{position:absolute;left:18px;top:12px;font-size:12px;color:var(--tx3);pointer-events:none}
 .rng{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--tx2);flex-wrap:wrap}
 .rng input{width:150px;accent-color:var(--ac)}
 .rng b{min-width:2.5em;font-variant-numeric:tabular-nums;color:var(--tx)}
@@ -3317,7 +3321,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
+    ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 화면이 멈추지 않게 바로 그린 뒤 자주 나온 마디부터 조금씩 자리를 잡아요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
     ['1.0.1', '2026-10-19', ['기억 마디 (뉴런처럼): 저장할 때 Jev가 문장마다 기억할 낱말(물건 · 사건 · 장소 …)을 골라 인물과 함께 마디로 잇고, 보낼 때 장면에 맞는 마디를 켜서 연결된 기억을 같이 꺼내요. 메시지에 글자로 나온 마디는 바로 켜지고, 서술에 너무 자주 나오는 낱말은 배경으로 보고 안 켜요.', '처음 보는 일상 시험(질문 없이 채팅만 28턴, 블라인드 채점): 필요한 기억 19.5 → 26.5/28, 해로운 기억 1 → 0. 기존 시험 38/38 · 54/55 그대로.', '고침: 긴 세션에서 가끔 검색어 하나가 빈 값이 되어 그 턴 회상이 실패하던 문제, 이모지가 반으로 잘려 Jev가 400 오류를 내던 문제.', '"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
   ];
@@ -3376,6 +3380,7 @@ details.more.danger summary{color:var(--tx2)}
     for (const [k, x, old] of xs) { const el = document.querySelector(`[data-x="${k}"]`); if (el && el !== old) el.scrollLeft = x; }
     bindOnce();
     bindGraph();
+    bindNodeMap();
   }
   /** 시트: 같은 시트면 안쪽만 바꾸고 스크롤 그대로. 새로 열 때만 애니메이션 */
   function renderSheetHost() {
@@ -3724,75 +3729,259 @@ details.more.danger summary{color:var(--tx2)}
 
 
   const fitView = (xs, ys, m0 = 56) => { const x0 = Math.min(...xs) - m0, x1 = Math.max(...xs) + m0, y0 = Math.min(...ys) - m0, y1 = Math.max(...ys) + m0 + 18; const w = Math.max(360, x1 - x0), h = Math.max(300, y1 - y0); return { x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - h / 2, W: w, H: h }; };
-  /** 힘 배치 (마디 그림용): 서로 밀고 줄은 당긴 뒤, 겹침을 풀고 판 크기를 맞춘다 */
-  function forceLayout(items, edges, sig, cacheKey) {
-    if (ui[cacheKey] && ui[cacheKey].sig === sig) return ui[cacheKey];
-    const n = items.length, f = Math.max(1, Math.sqrt(n / 14));
-    const W = (wide() ? 640 : 380) * f, H = (wide() ? 440 : 460) * f;
-    const pos = {};
-    items.forEach((it, i) => { const a = (fnv(it.id) % 360) / 180 * Math.PI; const d = 0.15 + ((i * 37) % 100) / 300; pos[it.id] = { x: W / 2 + Math.cos(a) * W * d, y: H / 2 + Math.sin(a) * H * d }; });
-    const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.7;
-    let temp = W / 8;
-    for (let it = 0; it < 260; it++) {
-      const disp = Object.fromEntries(items.map(x => [x.id, { x: 0, y: 0 }]));
-      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-        const a = pos[items[i].id], b = pos[items[j].id];
-        let dx = a.x - b.x, dy = a.y - b.y; const d = Math.max(1, Math.hypot(dx, dy)); const fr = (k * k) / d; dx /= d; dy /= d;
-        disp[items[i].id].x += dx * fr; disp[items[i].id].y += dy * fr; disp[items[j].id].x -= dx * fr; disp[items[j].id].y -= dy * fr;
-      }
-      for (const e of edges) {
-        const a = pos[e.a], b = pos[e.b]; const dx = a.x - b.x, dy = a.y - b.y; const d = Math.max(1, Math.hypot(dx, dy));
-        const fr = ((d * d) / k) * (0.3 + Math.min(1, Math.log2(1 + e.w) / 4));
-        disp[e.a].x -= (dx / d) * fr; disp[e.a].y -= (dy / d) * fr; disp[e.b].x += (dx / d) * fr; disp[e.b].y += (dy / d) * fr;
-      }
-      for (const x of items) { const q = pos[x.id], v = disp[x.id]; v.x += (W / 2 - q.x) * 0.03; v.y += (H / 2 - q.y) * 0.03; const d = Math.max(1, Math.hypot(v.x, v.y)); q.x += (v.x / d) * Math.min(d, temp); q.y += (v.y / d) * Math.min(d, temp); }
-      temp *= 0.985;
-    }
-    const xs = items.map(x => pos[x.id].x), ys = items.map(x => pos[x.id].y);
-    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-    const sc = Math.min(1.6, (W - 110) / Math.max(1, x1 - x0), (H - 110) / Math.max(1, y1 - y0));
-    for (const x of items) { const q = pos[x.id]; q.x = W / 2 + (q.x - (x0 + x1) / 2) * sc; q.y = H / 2 - 8 + (q.y - (y0 + y1) / 2) * sc; }
-    for (let it = 0; it < 120; it++) {
-      let push = false;
-      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-        const a = pos[items[i].id], b = pos[items[j].id];
-        let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
-        const need = items[i].r + items[j].r + 30;
-        if (d >= need) continue;
-        if (d < 0.01) { const t = ((i * 7 + j * 13) % 360) * Math.PI / 180; dx = Math.cos(t); dy = Math.sin(t); d = 1; }
-        const m = (need - d) / 2; a.x -= (dx / d) * m; a.y -= (dy / d) * m; b.x += (dx / d) * m; b.y += (dy / d) * m; push = true;
-      }
-      if (!push) break;
-    }
-    ui[cacheKey] = { sig, pos, view: fitView(items.map(x => pos[x.id].x), items.map(x => pos[x.id].y)) };
-    return ui[cacheKey];
-  }
-  /** 마디 그림: 자주 나온 마디(기본 30개)와 그 사이 줄. 찾기를 하면 그 마디와 이웃만 */
-  function nodeMapSvg(gr, list) {
+  // ══ 마디 지도 (캔버스) ══
+  //  ① 바로 그리고 프레임마다 조금씩 자리 잡는다 (화면이 안 멈춘다)
+  //  ② 자주 나온 마디부터 보이고, 나머지는 프레임마다 40개씩 붙는다
+  //  ③ 미는 힘은 Barnes-Hut (먼 무리는 한 덩어리로 계산)
+  //  ④ 그림 요소 대신 캔버스 한 장 (2000개까지)
+  const NMAP_MAX = 2000;
+  let nmapRunning = false;
+
+  function nodeMapPick() {
+    const gr = buildGraph();
+    const all = [...gr.nodes.values()].sort((a, b) => b.sents.length - a.sents.length);
     const q = (ui.nodesQ ?? '').trim();
-    let pick = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr));
-    if (q) { const hit = new Set(pick.filter(nd => nd.label.includes(q)).map(nd => nd.label)); for (const h of [...hit]) for (const [w] of [...(gr.edges.get(h) ?? new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10)) hit.add(w); pick = [...hit].map(w => gr.nodes.get(w)).filter(Boolean); }
-    pick = pick.slice(0, ui.nodesN ?? 30);
-    if (!pick.length) return '<div class="empty small">그릴 마디가 없어요.</div>';
-    const names = new Set(pick.map(nd => nd.label));
+    let pick = all.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr));
+    if (q) {
+      const hit = new Set(pick.filter(nd => nd.label.includes(q)).map(nd => nd.label));
+      for (const h of [...hit]) for (const [w] of [...(gr.edges.get(h) ?? new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10)) hit.add(w);
+      pick = [...hit].map(w => gr.nodes.get(w)).filter(Boolean).sort((a, b) => b.sents.length - a.sents.length);
+    }
+    return { gr, pick: pick.slice(0, Math.min(NMAP_MAX, ui.nodesN ?? 30)) };
+  }
+
+  function makeNodeSim(gr, pick, sig, prev) {
+    const old = new Map((prev?.nodes ?? []).map(n => [n.id, n]));
     const max = Math.max(1, ...pick.map(nd => nd.sents.length));
-    const items = pick.map(nd => ({ id: nd.label, r: 14 + Math.sqrt(nd.sents.length / max) * 14, nd }));
-    // 줄: 마디마다 가장 굵은 줄 4개까지 (거미줄이 너무 빽빽하지 않게)
+    const nodes = pick.map((nd, i) => {
+      const o = old.get(nd.label);
+      return { id: nd.label, kind: nd.kind, hue: hueOf(nd.label), bg: nodeIsCommon(nd, gr), count: nd.sents.length, rank: i,
+        r: 12 + Math.sqrt(nd.sents.length / max) * 16, x: o?.x, y: o?.y, vx: 0, vy: 0 };
+    });
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    // 줄: 마디마다 가장 굵은 줄 4개까지
     const eset = new Map();
-    for (const nd of pick) for (const [w, c] of [...(gr.edges.get(nd.label) ?? new Map())].filter(([w]) => names.has(w)).sort((a, b) => b[1] - a[1]).slice(0, 4)) { const key = [nd.label, w].sort().join('\u0001'); if (!eset.has(key)) eset.set(key, { a: nd.label, b: w, w: c }); }
+    for (const n of nodes) for (const [w, c] of [...(gr.edges.get(n.id) ?? new Map())].filter(([w]) => byId.has(w)).sort((a, b) => b[1] - a[1]).slice(0, 4)) {
+      const key = n.id < w ? `${n.id}\u0001${w}` : `${w}\u0001${n.id}`;
+      if (!eset.has(key)) eset.set(key, { a: n, b: byId.get(w), w: c });
+    }
     const edges = [...eset.values()];
-    const L = forceLayout(items, edges, `${items.map(x => x.id).join(',')}|${edges.length}`, 'nlayout');
-    const g = (ui.ngraph ??= { x: 0, y: 0, k: 1 });
-    const lines = edges.map(e => { const a = L.pos[e.a], b = L.pos[e.b]; return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#56608a" stroke-width="${(1 + Math.min(5, Math.log2(1 + e.w))).toFixed(1)}" stroke-opacity="${Math.min(0.9, 0.3 + e.w / 12).toFixed(2)}" stroke-linecap="round"/>`; }).join('');
-    const nodes = items.map(x => {
-      const p = L.pos[x.id], person = x.nd.kind === 'person', bg = nodeIsCommon(x.nd, gr), h = hueOf(x.id);
-      const fill = person ? `hsl(${h} 45% 24%)` : 'rgba(140,158,255,.16)';
-      const stroke = person ? `hsl(${h} 70% 55%)` : (bg ? '#4a5168' : 'var(--ac)');
-      const inner = person ? escapeHtml(x.id.slice(0, 1)) : String(x.nd.sents.length);
-      return `<g class="node${bg ? ' bgnode' : ''}" data-act="node" data-name="${escapeHtml(x.id)}" transform="translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})"><circle r="${x.r.toFixed(1)}" fill="${fill}" stroke="${stroke}"${bg ? ' stroke-dasharray="4 4"' : ''}/><text text-anchor="middle" dy="5" fill="${person ? `hsl(${h} 90% 86%)` : '#c9d2ff'}" style="font-size:${person ? 15 : 12}px">${inner}</text><text class="lbl" text-anchor="middle" y="${(x.r + 16).toFixed(1)}">${escapeHtml(clip(x.id, 9))}</text></g>`;
-    }).join('');
-    const v = L.view;
-    return `<svg class="graph" viewBox="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.W.toFixed(0)} ${v.H.toFixed(0)}" data-graph data-gstate="ngraph" role="img" aria-label="기억 마디 그림"><g data-pan transform="translate(${g.x} ${g.y}) scale(${g.k})">${lines}${nodes}</g></svg>`;
+    const kept = nodes.filter(n => n.x != null).length;
+    return { sig, nodes, edges, byId, shown: kept === nodes.length ? nodes.length : Math.min(nodes.length, Math.max(kept, 60)), alpha: kept > nodes.length * 0.8 ? 0.35 : 1, cv: null, frames: 0 };
+  }
+
+  // 새로 붙는 마디의 첫 자리: 이미 자리 잡은 이웃 곁, 없으면 해바라기 씨 모양으로
+  function placeNode(sim, n) {
+    if (n.x != null) return;
+    const nb = sim.edges.find(e => (e.a === n && e.b.x != null) || (e.b === n && e.a.x != null));
+    const o = nb ? (nb.a === n ? nb.b : nb.a) : null;
+    const t = n.rank * 2.399963;
+    if (o) { n.x = o.x + Math.cos(t) * (o.r + n.r + 30); n.y = o.y + Math.sin(t) * (o.r + n.r + 30); }
+    else { const d = 34 * Math.sqrt(n.rank + 1); n.x = Math.cos(t) * d; n.y = Math.sin(t) * d; }
+  }
+
+  // ── Barnes-Hut 사분 나무 ──
+  function buildQuad(list) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of list) { if (n.x < x0) x0 = n.x; if (n.x > x1) x1 = n.x; if (n.y < y0) y0 = n.y; if (n.y > y1) y1 = n.y; }
+    const size = Math.max(x1 - x0, y1 - y0, 1) + 1;
+    const root = { x: x0, y: y0, s: size, m: 0, cx: 0, cy: 0, kids: null, item: null };
+    const insert = (q, n, depth) => {
+      if (!q.kids && !q.item && q.m === 0) { q.item = n; q.m = 1; q.cx = n.x; q.cy = n.y; return; }
+      if (!q.kids) {
+        if (depth > 24) { q.m++; q.cx += (n.x - q.cx) / q.m; q.cy += (n.y - q.cy) / q.m; return; }   // 같은 자리에 겹친 것
+        const h = q.s / 2;
+        q.kids = [0, 1, 2, 3].map(k => ({ x: q.x + (k & 1) * h, y: q.y + (k >> 1) * h, s: h, m: 0, cx: 0, cy: 0, kids: null, item: null }));
+        const it = q.item; q.item = null;
+        if (it) { const k = (it.x >= q.x + h ? 1 : 0) + (it.y >= q.y + h ? 2 : 0); insert(q.kids[k], it, depth + 1); }
+      }
+      q.m++; q.cx += (n.x - q.cx) / q.m; q.cy += (n.y - q.cy) / q.m;
+      const h = q.s / 2;
+      const k = (n.x >= q.x + h ? 1 : 0) + (n.y >= q.y + h ? 2 : 0);
+      insert(q.kids[k], n, depth + 1);
+    };
+    for (const n of list) insert(root, n, 0);
+    return root;
+  }
+  function repel(q, n, k) {
+    if (!q || q.m === 0 || q.item === n) return;
+    const dx = q.cx - n.x, dy = q.cy - n.y;
+    const d2 = dx * dx + dy * dy + 0.01;
+    if (q.item || (q.s * q.s) / d2 < 0.81) {   // 멀면 한 덩어리 (θ = 0.9)
+      const f = (k * q.m) / d2;
+      n.vx -= dx * f; n.vy -= dy * f;
+      return;
+    }
+    if (q.kids) for (const c of q.kids) repel(c, n, k);
+  }
+
+  function stepNodeSim(sim) {
+    const list = sim.nodes.slice(0, sim.shown);
+    if (!list.length) return;
+    const a = sim.alpha;
+    const root = buildQuad(list);
+    for (const n of list) repel(root, n, 900 * a);
+    for (const e of sim.edges) {
+      if (e.a.rank >= sim.shown || e.b.rank >= sim.shown) continue;
+      const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const rest = e.a.r + e.b.r + 50;
+      const f = ((d - rest) / d) * 0.06 * a * (0.5 + Math.min(1, Math.log2(1 + e.w) / 3));
+      e.a.vx += dx * f; e.a.vy += dy * f; e.b.vx -= dx * f; e.b.vy -= dy * f;
+    }
+    for (const n of list) { n.vx -= n.x * 0.012 * a; n.vy -= n.y * 0.012 * a; }
+    // 겹침: 칸 나눔으로 가까운 것끼리만 (동그라미 + 이름표 자리)
+    const cell = 80, grid = new Map();
+    for (const n of list) { const key = `${Math.floor(n.x / cell)},${Math.floor(n.y / cell)}`; (grid.get(key) ?? grid.set(key, []).get(key)).push(n); }
+    for (const n of list) {
+      const gx = Math.floor(n.x / cell), gy = Math.floor(n.y / cell);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const m of grid.get(`${gx + i},${gy + j}`) ?? []) {
+        if (m.rank <= n.rank) continue;
+        const dx = m.x - n.x, dy = m.y - n.y, d = Math.hypot(dx, dy) || 0.01, need = n.r + m.r + 20;
+        if (d >= need) continue;
+        const p = ((need - d) / d) * 0.5;
+        n.x -= dx * p; n.y -= dy * p; m.x += dx * p; m.y += dy * p;
+      }
+    }
+    for (const n of list) { n.vx *= 0.6; n.vy *= 0.6; n.x += n.vx; n.y += n.vy; }
+    // 많을수록 빨리 식힌다 (300개 넘으면 계산 한 번이 무거워서, 자리 잡는 시간을 줄인다)
+    sim.alpha = Math.max(0, a * (sim.nodes.length > 300 ? 0.97 : 0.985));
+  }
+
+  function nmapColors() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (k, d) => (cs.getPropertyValue(k) || '').trim() || d;
+    return { ac: v('--ac', '#8c9eff'), tx: v('--tx', '#e8ebf2'), tx2: v('--tx2', '#a3aabb'), line: '#56608a', bgln: '#4a5168' };
+  }
+  function nmapCamera(sim, w, h) {
+    const cam = (ui.ncam ??= { cx: 0, cy: 0, k: 1 });
+    if (ui.ncamUser) return cam;
+    // 자리 없는 마디는 빼고, 숫자가 깨졌으면 처음으로
+    if (![cam.cx, cam.cy, cam.k].every(Number.isFinite)) Object.assign(cam, { cx: 0, cy: 0, k: 1 });
+    const list = sim.nodes.slice(0, sim.shown).filter(n => Number.isFinite(n.x) && Number.isFinite(n.y));
+    if (!list.length) return cam;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of list) { x0 = Math.min(x0, n.x - n.r); x1 = Math.max(x1, n.x + n.r); y0 = Math.min(y0, n.y - n.r); y1 = Math.max(y1, n.y + n.r + 18); }
+    const k = Math.min(1.6, (w - 40) / Math.max(1, x1 - x0), (h - 40) / Math.max(1, y1 - y0));
+    cam.cx += ((x0 + x1) / 2 - cam.cx) * 0.25; cam.cy += ((y0 + y1) / 2 - cam.cy) * 0.25; cam.k += (k - cam.k) * 0.25;
+    return cam;
+  }
+  function drawNodeMap(sim) {
+    const cv = sim.cv;
+    if (!cv) return;
+    const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const ctx = cv.getContext('2d');
+    const C = sim.colors ??= nmapColors();
+    const cam = nmapCamera(sim, w, h);
+    const sx = (x) => (x - cam.cx) * cam.k + w / 2, sy = (y) => (y - cam.cy) * cam.k + h / 2;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.lineCap = 'round';
+    for (const e of sim.edges) {
+      if (e.a.rank >= sim.shown || e.b.rank >= sim.shown || !Number.isFinite(e.a.x) || !Number.isFinite(e.b.x)) continue;
+      ctx.globalAlpha = Math.min(0.85, 0.25 + e.w / 12);
+      ctx.strokeStyle = C.line;
+      ctx.lineWidth = Math.max(0.6, (1 + Math.min(5, Math.log2(1 + e.w))) * Math.min(1, cam.k));
+      ctx.beginPath(); ctx.moveTo(sx(e.a.x), sy(e.a.y)); ctx.lineTo(sx(e.b.x), sy(e.b.y)); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    const many = sim.shown > 120;
+    for (let i = 0; i < sim.shown; i++) {
+      const n = sim.nodes[i];
+      if (!Number.isFinite(n.x)) continue;
+      const x = sx(n.x), y = sy(n.y), r = n.r * cam.k;
+      if (x < -r - 60 || x > w + r + 60 || y < -r - 40 || y > h + r + 40) continue;   // 화면 밖은 안 그린다
+      ctx.globalAlpha = n.bg ? 0.5 : 1;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(2, r), 0, Math.PI * 2);
+      ctx.fillStyle = n.kind === 'person' ? `hsl(${n.hue} 45% 24%)` : 'rgba(140,158,255,.16)';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = n.kind === 'person' ? `hsl(${n.hue} 70% 55%)` : (n.bg ? C.bgln : C.ac);
+      ctx.setLineDash(n.bg ? [4, 4] : []);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (r >= 9) {
+        ctx.fillStyle = n.kind === 'person' ? `hsl(${n.hue} 90% 86%)` : '#c9d2ff';
+        ctx.font = `700 ${n.kind === 'person' ? Math.min(16, r * 0.9) : Math.min(13, r * 0.8)}px system-ui, sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(n.kind === 'person' ? n.id.slice(0, 1) : String(n.count), x, y + 1);
+      }
+      // 이름표: 많을 때는 큰 마디 · 확대했을 때만 (글자가 겹쳐 읽을 수 없게 되지 않게)
+      if (!many || n.rank < 60 || cam.k >= 1.1) {
+        if (r >= 6) {
+          ctx.fillStyle = C.tx2; ctx.font = `600 ${Math.max(11, Math.min(14, 12 * cam.k))}px system-ui, sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+          ctx.fillText(n.id.length > 9 ? `${n.id.slice(0, 9)}…` : n.id, x, y + r + 4);
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+    const st = document.getElementById('nmap-stat');
+    if (st) st.textContent = `마디 ${sim.shown}/${sim.nodes.length}${sim.alpha > 0.05 || sim.shown < sim.nodes.length ? ' · 자리 잡는 중…' : ''}`;
+  }
+
+  function nodeMapLoop() {
+    const sim = ui.nsim;
+    if (!sim?.cv?.isConnected) { nmapRunning = false; return; }
+    const t0 = performance.now();
+    if (sim.shown < sim.nodes.length) { const to = Math.min(sim.nodes.length, sim.shown + 40); for (let i = sim.shown; i < to; i++) placeNode(sim, sim.nodes[i]); sim.shown = to; sim.alpha = Math.max(sim.alpha, 0.5); }
+    for (const n of sim.nodes.slice(0, sim.shown)) placeNode(sim, n);
+    // 한 프레임에 8ms까지만 계산 (나머지는 다음 프레임)
+    do { if (sim.alpha > 0.01) stepNodeSim(sim); } while (sim.alpha > 0.01 && performance.now() - t0 < 8);
+    drawNodeMap(sim);
+    sim.dirty = false;
+    if (sim.alpha > 0.01 || sim.shown < sim.nodes.length || (!ui.ncamUser && sim.frames++ < 30)) requestAnimationFrame(nodeMapLoop);
+    else nmapRunning = false;
+  }
+  function kickNodeMap() { if (!nmapRunning && ui.nsim?.cv?.isConnected) { nmapRunning = true; requestAnimationFrame(nodeMapLoop); } }
+
+  function bindNodeMap() {
+    const cv = document.getElementById('nmap');
+    if (!cv) return;
+    const { gr, pick } = nodeMapPick();
+    const sig = `${gr.key}|${pick.length}|${pick[0]?.label ?? ''}|${pick[pick.length - 1]?.label ?? ''}|${ui.nodesQ ?? ''}|${ui.nodesBg ? 1 : 0}`;
+    if (!ui.nsim || ui.nsim.sig !== sig) { ui.nsim = makeNodeSim(gr, pick, sig, ui.nsim); ui.ncamUser = false; }
+    const sim = ui.nsim;
+    if (sim.cv !== cv) { sim.cv = cv; sim.colors = null; sim.frames = 0; }
+    if (!cv.__bound) {
+      cv.__bound = true;
+      const pts = new Map();
+      let start = null, moved = false, pinch = null;
+      const toWorld = (cx, cy) => { const b = cv.getBoundingClientRect(), cam = ui.ncam; return { x: (cx - b.left - b.width / 2) / cam.k + cam.cx, y: (cy - b.top - b.height / 2) / cam.k + cam.cy }; };
+      const zoomAt = (cx, cy, f) => { const cam = ui.ncam, p = toWorld(cx, cy); const k2 = Math.max(0.08, Math.min(4, cam.k * f)); cam.cx = p.x - (p.x - cam.cx) * cam.k / k2; cam.cy = p.y - (p.y - cam.cy) * cam.k / k2; cam.k = k2; ui.ncamUser = true; drawNodeMap(ui.nsim); };
+      cv.addEventListener('pointerdown', (e) => { pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pts.size === 1) { start = { x: e.clientX, y: e.clientY, cx: ui.ncam.cx, cy: ui.ncam.cy }; moved = false; } if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: ui.ncam.k }; } });
+      cv.addEventListener('pointermove', (e) => {
+        if (!pts.has(e.pointerId)) return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size === 2 && pinch) { const [a, b] = [...pts.values()]; zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, (Math.hypot(a.x - b.x, a.y - b.y) / pinch.d) * pinch.k / ui.ncam.k); moved = true; return; }
+        if (!start) return;
+        const dx = e.clientX - start.x, dy = e.clientY - start.y;
+        if (!moved && Math.hypot(dx, dy) < 5) return;
+        if (!moved) cv.setPointerCapture?.(e.pointerId);
+        moved = true; ui.ncamUser = true;
+        ui.ncam.cx = start.cx - dx / ui.ncam.k; ui.ncam.cy = start.cy - dy / ui.ncam.k;
+        drawNodeMap(ui.nsim);
+      });
+      const end = (e) => {
+        const wasTap = pts.size === 1 && !moved && start;
+        pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) start = null;
+        if (!wasTap || e.type !== 'pointerup') return;
+        // 누른 자리에 가장 가까운 마디
+        const p = toWorld(e.clientX, e.clientY), s = ui.nsim;
+        let best = null, bd = Infinity;
+        for (const n of s.nodes.slice(0, s.shown)) { const d = Math.hypot(n.x - p.x, n.y - p.y) - n.r; if (d < bd) { bd = d; best = n; } }
+        if (best && bd <= 8 / ui.ncam.k) { ui.sheet = { type: 'node', name: best.id }; render(); }
+      };
+      cv.addEventListener('pointerup', end);
+      cv.addEventListener('pointercancel', end);
+      cv.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
+      globalThis.addEventListener?.('resize', () => { if (ui.nsim?.cv?.isConnected) drawNodeMap(ui.nsim); });
+    }
+    for (const n of sim.nodes.slice(0, sim.shown)) placeNode(sim, n);   // 첫 그림 전에 자리부터
+    drawNodeMap(sim);
+    kickNodeMap();
   }
 
   // ══ 마디 탭 ══
@@ -3816,10 +4005,10 @@ details.more.danger summary{color:var(--tx2)}
     const head = `${fill}<div class="kpis" style="margin-bottom:14px">${kpiBox(all.length, '마디')}${kpiBox(people, '인물')}${kpiBox(words, '낱말')}${kpiBox(common, '배경 낱말')}</div>
       <div class="seg" style="margin-bottom:12px"><button class="${mode === 'map' ? 'on' : ''}" data-act="nodes-mode" data-v="map">그림</button><button class="${mode === 'list' ? 'on' : ''}" data-act="nodes-mode" data-v="list">목록</button></div>`;
     if (mode === 'map') return `${head}<section class="card graphcard">
-        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2>${(() => { const avail = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr)).length; const mx = Math.max(10, Math.min(400, avail)); const cur = Math.min(mx, ui.nodesN ?? 30); return `<label class="rng">보일 마디 <input type="range" id="nn" min="10" max="${mx}" step="1" value="${cur}" aria-label="보일 마디 수"><b id="nn-v">${cur}</b><span class="dim">/ ${avail > 400 ? '400 (많아서 400까지)' : avail}</span></label>`; })()}<button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
+        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2>${(() => { const avail = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr)).length; const mx = Math.max(10, Math.min(NMAP_MAX, avail)); const cur = Math.min(mx, ui.nodesN ?? 30); return `<label class="rng">보일 마디 <input type="range" id="nn" min="10" max="${mx}" step="1" value="${cur}" aria-label="보일 마디 수"><b id="nn-v">${cur}</b><span class="dim">/ ${avail > NMAP_MAX ? `${NMAP_MAX} (많아서 ${NMAP_MAX}까지)` : avail}</span></label>`; })()}<button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
         <div style="padding:0 16px"><div class="search" style="margin:10px 0 4px">${icon('search', 18)}<input id="nq" placeholder="마디 찾기 (그 마디와 이웃만 그려요)" value="${escapeHtml(ui.nodesQ ?? '')}" autocomplete="off"></div></div>
-        ${nodeMapSvg(gr, list)}
-        <div class="legend"><span><i style="background:var(--ac)"></i>낱말 (안 숫자 = 붙은 기억)</span><span>동그라미 = 인물</span><span>선 굵기 = 같은 문장에 나온 횟수</span><div class="gtools"><button class="iconbtn" data-act="gzoom" data-g="ngraph" data-f="1.25" aria-label="확대">${icon('plus', 18)}</button><button class="iconbtn" data-act="gzoom" data-g="ngraph" data-f="0.8" aria-label="축소">${icon('minus', 18)}</button><button class="iconbtn" data-act="greset" data-g="ngraph" aria-label="처음 위치">${icon('refresh', 18)}</button></div></div>
+        <div class="nmapwrap"><canvas class="nmap" id="nmap" role="img" aria-label="기억 마디 그림"></canvas><div class="nmapstat" id="nmap-stat"></div></div>
+        <div class="legend"><span><i style="background:var(--ac)"></i>낱말 (안 숫자 = 붙은 기억)</span><span>동그라미 = 인물</span><span>선 굵기 = 같은 문장에 나온 횟수</span><div class="gtools"><button class="iconbtn" data-act="nzoom" data-f="1.25" aria-label="확대">${icon('plus', 18)}</button><button class="iconbtn" data-act="nzoom" data-f="0.8" aria-label="축소">${icon('minus', 18)}</button><button class="iconbtn" data-act="nreset" aria-label="처음 위치">${icon('refresh', 18)}</button></div></div>
       </section>`;
     return `${head}
       <section class="card">
@@ -4404,7 +4593,7 @@ details.more.danger summary{color:var(--tx2)}
   }
   async function onChange(e) {
     const el = e.target;
-    if (el.id === 'nn') { ui.nodesN = Number(el.value); ui.nlayout = null; ui.ngraph = { x: 0, y: 0, k: 1 }; render(); return; }
+    if (el.id === 'nn') { ui.nodesN = Number(el.value); render(); return; }
     if (el.id === 'ja-imp' && el.files?.[0]) {
       try {
         const data = JSON.parse(await el.files[0].text());
@@ -4577,6 +4766,8 @@ details.more.danger summary{color:var(--tx2)}
       case 'gzoom': { const f = Number(el.dataset.f); const g = (ui[el.dataset.g || 'graph'] ??= { x: 0, y: 0, k: 1 }); const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
       case 'greset': if (el.dataset.g === 'ngraph') { ui.ngraph = { x: 0, y: 0, k: 1 }; ui.nlayout = null; } else { ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; } render(); return;
       case 'nodes-mode': ui.nodesMode = el.dataset.v; render(); return;
+      case 'nzoom': { const cam = (ui.ncam ??= { cx: 0, cy: 0, k: 1 }); cam.k = Math.max(0.08, Math.min(4, cam.k * Number(el.dataset.f))); ui.ncamUser = true; if (ui.nsim) drawNodeMap(ui.nsim); return; }
+      case 'nreset': ui.ncamUser = false; if (ui.nsim) { ui.nsim.frames = 0; kickNodeMap(); } return;
       case 'nodes-bg': ui.nodesBg = !ui.nodesBg; ui.nlayout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
       case 'dircards': ui.sheet = null; ui.view = 'cards'; render(); document.getElementById('sc').scrollTop = 0; return;
@@ -4963,7 +5154,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, stepNodeSim, drawNodeMap, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
