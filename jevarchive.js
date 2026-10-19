@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -198,6 +198,7 @@
       cards: false,   // 칸 줄이 사건 카드를 대신한다
       director: s.director === true,
       intim: s.intim === true,
+      tags: s.tags !== false,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
@@ -878,6 +879,15 @@
       out.push(`Secret: ${t.who} hides from ${from}: "${tagLine(t)}" — ${from} does not know this yet. Keep it hidden unless the story itself reveals it.`);
       out.ko.push({ t: `비밀 · ${t.who} (${t.to ?? '모두'} 모르게)`, c: 'sec' });
     }
+    // 인물 태그: 장면에 나온 인물만, 4명까지
+    if (settings.tags !== false) for (const n of present.slice(0, 4)) {
+      const { pos, neg } = topTags(n);
+      if (!pos.length && !neg.length) continue;
+      const top = [...pos, ...neg].sort((x, y) => Math.abs(y[1].s) - Math.abs(x[1].s))[0];
+      const fmt = (l) => l.map(([w, t]) => `${w}(${Math.abs(t.s)})`).join(', ');
+      out.push(`${n} tags: ${[pos.length ? `+ ${fmt(pos)}` : '', neg.length ? `- ${fmt(neg)}` : ''].filter(Boolean).join(' · ')}${top?.[1].q ? ` (e.g. "${clip(top[1].q, 60)}")` : ''}`);
+      out.ko.push({ t: `${n} · ${[pos.length ? `💚 ${pos.map(x => x[0]).join(' · ')}` : '', neg.length ? `💔 ${neg.map(x => x[0]).join(' · ')}` : ''].filter(Boolean).join(' ')}`, c: '' });
+    }
     if ([...openThreads(), ...openSecrets()].some(t => t.tags?.some(g => g.r !== 'none') && out.some(l => l.includes(tagLine(t))))) {
       out.splice(out[0]?.startsWith('Now:') ? 1 : 0, 0, 'Slots (auto, may be rough): who/with/whom/when/where/what/how/why, X=empty');
       out.ko.splice(0, 0);
@@ -1021,7 +1031,7 @@
   // asked:   이미 Jev에게 "사람이야?"를 물어본 낱말 (결과와 상관없이 다시 안 묻는다)
 
   const STORY_KEY = (key) => `${KEY}story_${key}`;
-  const emptyStory = () => ({ v: 1, people: {}, pairs: {}, threads: [], pins: [], asked: [], rejected: [], notSame: [], memThreads: {}, analyzed: [], seq: 0, director: null, dirTurn: 0, dirRecent: [], genres: null });
+  const emptyStory = () => ({ v: 1, people: {}, pairs: {}, threads: [], pins: [], asked: [], rejected: [], notSame: [], memThreads: {}, tags: {}, tagAsked: [], analyzed: [], seq: 0, director: null, dirTurn: 0, dirRecent: [], genres: null });
   let story = emptyStory();
   let storyTimer = null;
   let storyChain = Promise.resolve();
@@ -1422,10 +1432,14 @@
       }
       q[`k${i}_how`] = { type: 'choice', instructions: `In «${j.s}», how was it done?`, criteria: MANNER };
     });
+    // ── 인물 태그: 문장마다 질문 하나 ──
+    const ptagJobs = settings.story && settings.tags !== false ? tagCandidates(runChunks).slice(0, TAG_MAX) : [];
+    ptagJobs.forEach((j, i) => { q[`t${i}`] = { type: 'choice', instructions: `T${i}`, criteria: j.opts }; });
+    const storyState = ptagJobs.length ? `${state}\n\n${TAG_GUIDE}\n${ptagJobs.map((j, i) => `T${i} (${j.person}): ${j.s}`).join('\n')}` : state;
     const newCards = [];
     if (Object.keys(q).length) {
       try {
-        const a = await callJev(state, q);
+        const a = await callJev(storyState, q);
         if (moved()) return 0;
         pairJobs.forEach((j, i) => {
           const [ch, p] = topChoice(a[`a${i}`]);
@@ -1454,6 +1468,14 @@
         });
         closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
         revealJobs.forEach((t, i) => { if (Number(a[`v${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
+        ptagJobs.forEach((j, i) => {
+          (story.tagAsked ??= []).push(j.h);
+          const ans = a[`t${i}`];
+          const pr = ans?.probabilities && Object.keys(ans.probabilities).length ? ans.probabilities : (ans?.choice ? { [ans.choice]: Number(ans.confidence ?? 1) } : {});
+          Object.entries(pr).filter(([k]) => k !== 'none' && /^[pn]\d+$/.test(k)).sort((x, y) => y[1] - x[1]).filter(([, v], r) => v >= (r === 0 ? 0.45 : 0.35)).slice(0, 2)
+            .forEach(([k]) => addTag(j.person, j.nouns[Number(k.slice(1))], k[0] === 'p' ? 1 : -1, j));
+        });
+        if ((story.tagAsked?.length ?? 0) > 4000) story.tagAsked = story.tagAsked.slice(-3000);
         const mt = (story.memThreads ??= {});
         memClose.forEach((t, i) => { if (Number(a[`cm${i}`]?.noul ?? 0) >= 0.7) mt[t.key] = 'done'; });
         memReveal.forEach((t, i) => { if (Number(a[`vm${i}`]?.noul ?? 0) >= 0.7) mt[t.key] = 'done'; });
@@ -1588,6 +1610,64 @@
     return run;
   }
 
+  // ── 인물 태그 ──
+  const TAG_CUE = /좋아|사랑|최고|멋지|멋있|예쁘|귀엽|고마|감사|행복|기쁘|기뻐|즐거|신나|설레|반하|반했|맛있|칭찬|자랑|든든|편안|안심|대단|훌륭|잘한|잘하|좋은|싫|미워|미운|짜증|화나|화가|화났|무서|두려|겁나|겁이|역겹|징그|지겹|귀찮|불편|불안|슬프|슬퍼|우울|외로|괴롭|억울|창피|부끄|질투|실망|후회|최악|못하|서툴|약점|트라우마|♡|♥|ㅠ|ㅜ/u;
+  const TAG_STOP = new Set(['것', '거', '때', '곳', '수', '일', '오늘', '지금', '정말', '진짜', '너무', '조금', '많이', '그냥', '우리', '나', '너', '저', '제', '내', '네', '그', '이', '저것', '이것', '그것', '자기', '모두', '다들', '사람', '생각', '마음', '느낌', '기분', '표정', '얼굴', '목소리', '눈', '손', '말', '듯', '뭐', '왜', '더', '또', '좀', '꼭', '다시', '같이', '함께', '아주', '매우', '그래도', '하지만', '그리고']);
+  const TAG_MAX = 12;
+  const TAG_GUIDE = '[TAGS] Each Tn below is a sentence about the person in brackets. Pick the one thing in it that is positive (+) for that person (something they like, enjoy, are proud of or good at, or a good experience) or negative (-) (something they dislike, fear, are bad at, or a bad experience). Choose none if nothing fits.';
+  /** 문장의 명사 후보 (규칙): 조사 떼고, 사람 이름 · 흔한 말 · 감정 말 · 동사 끝 같은 건 뺀다 */
+  function tagNouns(s) {
+    const out = [];
+    for (const raw of s.split(/\s+/)) {
+      const w = raw.replace(/[^\p{L}\p{N}]/gu, '').replace(PARTICLE, '');
+      if (w.length < 2 || w.length > 12 || /^\d+$/.test(w) || TAG_STOP.has(w) || TAG_CUE.test(w) || peopleIn(w).length) continue;
+      // 동사 · 형용사 끝 (바다 · 고구마처럼 '다 · 마'로 끝나는 명사는 남게, 끝말을 길게 본다)
+      if (/(했다|한다|된다|됐다|였다|었다|았다|겠다|이다|니다|하다|렸다|졌다|웠다|해요|어요|아요|에요|예요|네요|군요|구나|지만|는데|면서|하게|하고|하며|해서|해도|하면|하는|하던|했던|있는|없는|있다|없다|싶다|같다|같은|처럼|하자|해줘|줄게|할게|거야|거든|잖아|니까|려고|도록|듯이)$/u.test(w)) continue;
+      if (!out.includes(w)) out.push(w);
+      if (out.length >= 5) break;
+    }
+    return out;
+  }
+  /** 이번에 물을 문장들 (감정 말 센 것 먼저) */
+  function tagCandidates(runChunks) {
+    const main = new Set(personList().filter(p => !p.hidden && !isTitleName(p.name) && (p.count >= 3 || p.kind === 'char' || p.kind === 'persona')).map(p => p.name));
+    if (!main.size) return [];
+    const asked = new Set(story.tagAsked ?? []);
+    const low = new Set(facts.filter(f => (f.w ?? 3) < 1.5).map(f => unquote(f.sent)));
+    const jobs = [];
+    const seen = new Set();
+    for (const c of runChunks) for (const s of sentencesOf(c.text)) {
+      const clean = unquote(s);
+      if (clean.length < 6 || clean.length > 300 || !TAG_CUE.test(clean) || low.has(clean)) continue;
+      const h = fnv(clean);
+      if (asked.has(h) || seen.has(h)) continue;
+      const person = peopleIn(clean).find(n => main.has(n));
+      if (!person) continue;
+      const nouns = tagNouns(clean);
+      if (!nouns.length) continue;
+      seen.add(h);
+      const strength = (clean.match(new RegExp(TAG_CUE.source, 'gu')) ?? []).length;
+      jobs.push({ c, s: clip(clean, 220), h, person, nouns, strength, opts: Object.fromEntries([...nouns.flatMap((w, k) => [[`p${k}`, `${w} (+)`], [`n${k}`, `${w} (-)`]]), ['none', 'nothing positive or negative for them']]) });
+    }
+    return jobs.sort((x, y) => y.strength - x.strength);
+  }
+  function addTag(person, word, d, j) {
+    if (!person || !word) return;
+    const t = ((story.tags ??= {})[person] ??= {})[word] ??= { s: 0, n: 0 };
+    t.s = Math.max(-9, Math.min(9, t.s + d));
+    t.n++;
+    t.last = j.c.mi;
+    t.ck = ckOf(j.c);
+    t.q = clip(j.s, 90);
+    if (t.s === 0) delete story.tags[person][word];
+  }
+  /** 화면 · 모델용: 긍정 위 3개, 부정 위 2개 (점수 크기 → 최근 순) */
+  function topTags(name, nPos = 3, nNeg = 2) {
+    const tg = Object.entries(story.tags?.[name] ?? {});
+    const rank = (x, y) => Math.abs(y[1].s) - Math.abs(x[1].s) || (y[1].last ?? 0) - (x[1].last ?? 0);
+    return { pos: tg.filter(([, t]) => t.s > 0).sort(rank).slice(0, nPos), neg: tg.filter(([, t]) => t.s < 0).sort(rank).slice(0, nNeg), all: tg.sort(rank) };
+  }
+
   // ── 같은 사람 같아 보이는 이름 (규칙만, Jev 없이): 끝소리 · 호칭만 다르면 제안 ──
   //  보민이 · 보민아 → 보민, 하윤누나 · 하윤 누나 → 하윤, 단풍님 → 단풍. 내가 "아니야" 한 쌍은 다시 묻지 않는다
   const NAME_TAIL = /(이|아|야|님|씨|쨩|짱|군|양|누나|누님|언니|오빠|형|형님|선배|선배님)$/;
@@ -1656,12 +1736,18 @@
       }
     }
     for (const t of story.threads) { if (t.who === from) t.who = into; if (t.to === from) t.to = into; }
+    if (story.tags?.[from]) {
+      const dst = (story.tags[into] ??= {});
+      for (const [w, t] of Object.entries(story.tags[from])) { const d = (dst[w] ??= { s: 0, n: 0 }); d.s = Math.max(-9, Math.min(9, d.s + t.s)); d.n += t.n; if ((t.last ?? -1) > (d.last ?? -1)) Object.assign(d, { last: t.last, ck: t.ck, q: t.q }); }
+      delete story.tags[from];
+    }
     saveStory();
   }
   function hidePerson(name) {
     if (!story.people[name]) return;
     delete story.people[name];
     story.rejected.push(name);
+    if (story.tags) delete story.tags[name];
     for (const k of Object.keys(story.pairs)) if (k.split('|').includes(name)) delete story.pairs[k];
     saveStory();
   }
@@ -2687,6 +2773,14 @@ pre.raw{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;padding:12px;b
 .tool span:not(.ic){font-size:12px;color:var(--tx3);line-height:1.45}
 @media (max-width:520px){.tool{padding:12px}}
 .bgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tagchips{display:flex;flex-wrap:wrap;gap:6px}
+.tchip{display:inline-flex;align-items:center;border-radius:999px;border:1px solid var(--line);background:var(--s2);font-size:12.5px;overflow:hidden}
+.tchip.pos{border-color:rgba(120,220,160,.35);background:rgba(120,220,160,.08)}
+.tchip.neg{border-color:rgba(255,120,140,.35);background:rgba(255,120,140,.08)}
+.tchip button{border:0;background:none;color:var(--tx);font:inherit;padding:4px 4px 4px 10px;cursor:pointer}
+.tchip button b{font-weight:700;color:var(--tx3);margin-left:2px}
+.tchip .x{padding:4px 9px 4px 4px;color:var(--tx3)}
+.tchip .x:hover{color:var(--bad,#ff7a8a)}
 .bgroup{display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:14px;background:var(--s1,#141923);border:1px solid var(--line);min-width:0}
 .bgroup .bh{display:flex;gap:10px;align-items:flex-start}
 .bgroup .bh .ic{font-size:20px;line-height:1.2}
@@ -2791,7 +2885,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['0.1.3', '2026-10-19', ['긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
+    ['0.1.3', '2026-10-19', ['인물 태그 (💚 긍정 · 💔 부정): 인물이 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓아 인물 시트에 칩으로 보여 주고, 그 인물이 장면에 있을 때 짧게 넣어요. 설정 › 이야기에서 끌 수 있어요.', '긴 답장 대응: 기억 만들기를 메시지당 24문장 → 120문장까지. 예전에 24문장에서 끊긴 메시지는 뒤에서 25번째부터 이어서 만들어요 (앞은 다시 안 물어요).', '기억 고르기: 최근 대화를 끝만 자르지 않고 메시지 통째로 보여 줘요 (설정 › 기억 넣기 › 직접 조절의 "장면 길이", 기본 6000자). 긴 답장은 문단 묶음별로 따로 검색하고, 장면 인물도 한 명당 하나씩 후보에 넣어요.', '"보민이"가 나(페르소나)나 캐릭터일 때도 "보민 = 보민이?"를 물어요 (이때는 보민을 보민이에 합쳐요).', '관계 종류 9개 → 24개: 연애(짝사랑 · 썸 · 연인 · 부부 · 전 연인 · 섹스 파트너 · 불륜), 친구, 가족, 위아래(주인·하인 · 상사·부하 · 스승·제자 · 선배·후배 · 보호자), 동료, 적대(라이벌 · 적 · 집착).', '방향 있는 관계는 누가 주인 · 짝사랑 · 부모 · 상사인지까지 Jev가 같은 호출로 알아내요. 인물 시트에서 "누가 주인?" 버튼으로 바로 고칠 수 있고, 내가 고르면 고정돼요.', '관계가 바뀌는 것(썸 → 연인)도 잡도록 15번 함께 나올 때마다 다시 확인해요.', '기억에서 Jev가 약속 · 비밀로 본 문장(회색 빼고)도 약속 · 비밀 탭에 같이 보여요. 지켜짐 · 취소 · 드러남도 똑같이 눌러요. 메뉴 숫자도 같은 기준.', '기억 탭 · 인물 시트에서도 비밀 문장은 가려 둬요 (눌러서 보기).', '약속 탭의 약속은 누구 약속인지 잡히는 것만: 내가 쓴 건 "나 (혼자 다짐)", 인물이 둘이면 "A → B". 비밀은 누가 숨기는지 몰라도 다 넣어요.', '"지금" 탭 Jev 사용량 칸에 초기화 버튼.', '백업: 설정 › 도구에서 "채팅 로어북에 백업" (채팅을 복사 · 이동하면 같이 따라가요, 기억이 없는 채팅을 열면 알아서 되살려요) + JSON 파일 내보내기 · 가져오기.', '기억 넣기 프리셋은 처음부터 4칸 (가볍게 · 균형 · 꼼꼼하게 · 직접). [직접]을 누르면 바로 골라지고 전에 고른 숫자가 돌아와요. 숫자를 바꾸면 자동으로 [직접].', '설정 › 도구: "정리"(전부 정리 · 다시 읽기, 초기화 · 지우기는 접어서) · "백업"(로어북 묶음 [백업 · 되살리기], 파일 묶음 [내보내기 · 가져오기]).', '감독 "얼마나 자주" · "쓸 묶음"은 누르는 즉시 바뀌어요 (저장은 뒤에서).', '인물 시트 관계 줄에 바로 합치기 버튼. "아카네 = 세리자 아카네?", "사키 = 나나미 사키?"처럼 이름 한 단어만 따로 잡힌 인물도 정리할 것에 자동으로 떠요.', '기억에서 온 약속 · 비밀도 자동으로 끝나요: 그 사람(또는 같은 말)이 다시 나오면 이야기 정리 때 "지켜졌어? / 들켰어?"를 같은 호출로 물어요.', '설정 › Jev에 "동시 요청" (− / + 로 1~10, 기본 2). 지금 전부 정리 · 뒤에서 정리를 여러 개 같이 보내서 빨라요 (비용은 같아요). 너무 많다고(429) 하면 점점 길게 기다리며 4번까지 다시 해요.']],
     ['0.1.2', '2026-10-19', ['Jev 사용량과 예상 비용: "지금" 탭에서 방금 답장 · 오늘 · 이 채팅 · 전체를 볼 수 있어요. 가격은 설정에서 바꿔요 (기본 100만 토큰당 $0.042).', '기억 탭을 폴더식으로: 날짜 · 장소 / 인물 / 종류로 묶어 폴더를 고르고, 안에서는 메시지 단위로 봐요. PC는 왼쪽 폴더 · 오른쪽 내용, 폰은 눌러서 들어가요. 필터(종류 · 누가 · 순서)는 버튼 하나로.', '인물 탭 맨 위 "정리할 것": 보민이 = 보민? 같은 같은 사람 제안과, "누나(???)"처럼 호칭만으로 잡힌 인물을 한 번에 합치기 · 숨기기.']],
     ['0.1.1', '2026-10-19', ['저장할 때 Jev가 "나중에 꺼낼 만해? (0~3점)"도 같이 매겨요. "응!" · "하아…" 같은 건 버리고, 가벼운 반응은 꺼낼 때 조금 뒤로 보내요.', '"잡담"으로 분류돼도 꺼낼 만하면 살려요.']],
     ['0.1.0', '2026-10-19', [
@@ -3360,6 +3454,7 @@ details.more.danger summary{color:var(--tx2)}
     const titleWarn = isTitleName(name) ? `<div class="titlewarn"><div>「${escapeHtml(name)}」${hasBatchim(name) ? '은' : '는'} 호칭이라 누군지 확실하지 않아요. 여러 사람을 이렇게 불렀으면 <b>숨기기</b>, 한 사람이면 그 사람과 <b>합치기</b>.</div><div class="row" style="gap:6px"><button class="btn sm d" data-act="hide-person" data-name="${escapeHtml(name)}">숨기기</button>${others.length ? `<select class="sel" id="merge-in" style="flex:1;min-width:120px"><option value="">합칠 사람…</option>${others.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join('')}</select><button class="btn sm" data-act="merge" data-name="${escapeHtml(name)}">합치기</button>` : ''}</div></div>` : '';
     return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${pname(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="hint">${p.aliases.map(a => `<span class="chip">${escapeHtml(a)}</span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
       ${titleWarn}
+      ${(() => { const { all } = topTags(name, 0, 0); return settings.tags !== false && all.length ? `<div class="sec">태그 <span class="dim xs" style="font-weight:400">눌러서 원문 · × 로 지우기</span></div><div class="tagchips">${all.slice(0, 16).map(([w, t]) => `<span class="tchip ${t.s > 0 ? 'pos' : 'neg'}"><button data-act="chunk" data-ck="${escapeHtml(t.ck ?? '')}" title="${escapeHtml(t.q ?? '')}">${t.s > 0 ? '💚' : '💔'} ${escapeHtml(w)} <b>${Math.abs(t.s)}</b></button><button class="x" data-act="tag-del" data-name="${escapeHtml(name)}" data-w="${escapeHtml(w)}" aria-label="지우기">×</button></span>`).join('')}</div>` : ''; })()}
       <div class="sec">관계</div>
       ${rels.length ? rels.map(r => { const o = r.a === name ? r.b : r.a; const w = Math.abs(r.aff) * 5; return `<div class="relrow">${avatar(o, 'sm')}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b class="small">${pname(o)}</b><select class="sel" style="width:auto;min-height:32px;padding:2px 8px;font-size:12.5px" data-act="reltype" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}"><option value="">${r.co}번 함께</option>${REL_GROUPS.map(([g, ks]) => `<optgroup label="${g}">${ks.map(k => `<option value="${k}"${r.type === k ? ' selected' : ''}>${REL_TYPES[k]}</option>`).join('')}</optgroup>`).join('')}</select><button class="btn sm g" style="margin-left:6px" data-act="relmerge" data-from="${escapeHtml(o)}" data-into="${escapeHtml(name)}" title="같은 사람이면 합치기">합치기</button></div>
           ${relDir(r.type) ? `<div class="mbar" style="margin-top:6px"><span class="lb2">누가 ${relDir(r.type)[0]}?</span>${[r.a, r.b].map(n => `<button class="chip${r.who === n ? ' on' : ''}" data-act="relwho" data-a="${escapeHtml(r.a)}" data-b="${escapeHtml(r.b)}" data-who="${escapeHtml(n)}">${pname(n)}</button>`).join('')}</div>` : ''}
@@ -3484,6 +3579,7 @@ details.more.danger summary{color:var(--tx2)}
         </details>
       </section>
       <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">뒤에서 정리 · 보내기는 안 느려져요</span></div>
+        <div class="field inline"><div><label>인물 태그 (💚 긍정 · 💔 부정)</label><div class="help">인물마다 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓고, 그 인물이 장면에 있을 때 짧게 넣어요. 이야기 정리에 질문 몇 개만 더해요.</div></div>${sw('tags', d.tags !== false)}</div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><label>관계 횟수 (성인)</label><div class="help">두 사람이 실제로 관계를 가진 횟수를 세요. 회상 · 꿈 · 계획 · 농담은 안 세고, 같은 장면은 한 번만. 인물 페이지에서 고칠 수 있고, 둘이 같이 나올 때만 짧게 넣어요. 이야기 정리에 질문 하나만 더해요.</div></div>${sw('intim', d.intim)}</div>
         <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 분위기 · 꺼낼 약속을 짧게 귀띔해요. 회상과 같은 Jev 호출이라 호출 수는 안 늘어요. 이야기를 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div>
@@ -3732,6 +3828,7 @@ details.more.danger summary{color:var(--tx2)}
       case 'spoil': el.classList.toggle('show'); return;
       case 'go-secrets': await leaveSettings(); ui.view = 'promises'; ui.tkind = 'secret'; ui.threads = 'open'; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'mtab': ui.search.pins = el.dataset.v === 'pins'; render(); return;
+      case 'tag-del': { const m = story.tags?.[el.dataset.name]; if (m) { delete m[el.dataset.w]; saveStory(); render(); toast(`태그 "${el.dataset.w}"를 지웠어요.`); } return; }
       case 'relmerge': { const { from, into } = el.dataset; if (await confirmDialog(`${josa(from, '을', '를')} ${josa(into, '과', '와')} 같은 사람으로 합칠까요?\n${josa(from, '은', '는')} ${into}의 다른 이름이 되고, 관계 · 횟수도 합쳐져요.`, '합치기')) { mergePeople(from, into); ui.sheet = { type: 'person', name: into }; ui.layout = null; render(); toast(`${josa(from, '을', '를')} 합쳤어요.`); } return; }
       case 'pstep': { const inp = document.getElementById('jev-par'); if (inp) { inp.value = String(Math.max(1, Math.min(10, (Number(inp.value) || 2) + Number(el.dataset.d)))); scheduleSettingsSave(400); if (ui.onboard) ui.onboard.d = readForm(ui.onboard.d); } return; }
       case 'fthread': { const m = (story.memThreads ??= {}); if (el.dataset.to === 'open') delete m[el.dataset.key]; else m[el.dataset.key] = el.dataset.to; saveStory(); const sec = ui.tkind === 'secret'; toast(sec ? (el.dataset.to === 'open' ? '다시 숨긴 비밀로 옮겼어요' : el.dataset.to === 'done' ? '드러난 비밀로 옮겼어요' : '비밀 목록에서 뺐어요') : (el.dataset.to === 'open' ? '다시 열었어요' : el.dataset.to === 'done' ? '지켜진 약속으로 옮겼어요' : '취소된 약속으로 옮겼어요')); render(); return; }
@@ -4135,7 +4232,7 @@ details.more.danger summary{color:var(--tx2)}
     globalThis.__JEVARCHIVE_TEST__.x = {
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
-      renderNow, renderPeople, renderPromises, renderMemory, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
+      renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
       getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
