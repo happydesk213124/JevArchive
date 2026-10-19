@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, skipStatus: true,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -201,6 +201,7 @@
       skipStatus: s.skipStatus !== false,
       tags: s.tags !== false,
       overview: s.overview !== false,
+      graph: s.graph !== false,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
@@ -266,7 +267,7 @@
     if (kp) throw new Error(kp);
     if (!cfg.jevEndpoint || !cfg.jevModel) throw new Error('Jev 주소나 모델이 비어 있어요.');
     const t = nowMs();
-    const init = { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify({ model: cfg.jevModel, state, questions }) };
+    const init = { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify({ model: cfg.jevModel, state: wellFormed(state), questions: wellFormedDeep(questions) }) };
     let lastError;
     for (let attempt = 0; attempt < (lastError?.status === 429 ? 4 : 2); attempt++) {
       if (attempt) await new Promise(r => setTimeout(r, 800 * 2 ** (attempt - 1) + Math.random() * 300));
@@ -787,9 +788,11 @@
     if (miss.length) {
       const vs = await embedTexts(miss, '임베딩 (질문)');
       miss.forEach((t, i) => queryCache.set(t, qShrink(vs[i])));
-      if (queryCache.size > 200) queryCache.delete(queryCache.keys().next().value);
     }
-    return texts.map(t => queryCache.get(t));
+    // 돌려줄 걸 먼저 챙기고 나서 오래된 걸 지운다 (지우는 게 이번에 쓸 것이면 빈 값이 나가던 문제)
+    const out = texts.map(t => queryCache.get(t));
+    while (queryCache.size > 200) queryCache.delete(queryCache.keys().next().value);
+    return out.filter(Boolean);
   }
 
   // ── 감독 힌트: 회상과 같은 Jev 호출에 질문 몇 개를 더 얹는다 (호출이 늘지 않는다) ──
@@ -961,6 +964,13 @@
     const wantUpd = /지금|현재|아직|최신|요즘|바뀐|이제/u.test(latest);
     const nMsg = Math.max(4, Math.round(cfg.candidates / 2)), cap = cfg.candidates * 4;
     const first = hasPool ? await timed(tr, '후보 찾기', async () => retrieveBooks(qv, latest, new Set(), nMsg, cap, limitMi, wantUpd, present.filter(n => !['char', 'persona'].includes(story.people[n]?.kind))), () => `책 ${nMsg}권 · 문장 ${cap}개까지${wantUpd ? ' · 바뀐 것 먼저' : ''}`) : [];
+    // 마디 길 (뉴런): Jev가 켤 마디를 고르고 퍼진 만큼 문장을 보탠다
+    let gInfo = null, gPicks = [];
+    if (cfg.graph !== false && hasPool && qv.length) { const g = await graphRecall(qv, latest, `[USER]
+${latest}
+
+[RECENT STORY]
+${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks; gInfo = g.info; }
     const dir = cfg.director && cfg.story && present.length ? directorQuestions(present, qv, ctx) : null;
     const tailRaw = [], tailSkip = new Set();
     for (let mi = limitMi - 1; mi >= 0 && tailRaw.length < 6 && cfg.tailTokens > 0; mi--) {
@@ -973,7 +983,7 @@
       for (const [k, c] of tailRaw.entries()) tailAsk[`tm${k}`] = { type: 'noul', instructions: `Is this interface text rather than the story itself — a menu of choices or suggested next actions for the user, a status window or stat sheet, a to-do list, or a dice roll? «${clip(c.text, 400)}»` };
       // 모으기 질문인지 (같은 호출에 질문 하나)
       if (cfg.story && cfg.overview !== false && latest) tailAsk.ov = { type: 'noul', instructions: `Does the user's latest message ask to list, count, or look back over many things from the whole story so far — for example everyone they have met, all promises, all relationships, or how many times something happened? «${clip(latest, 300)}»` };
-      const r1 = await timed(tr, 'Jev 채점', () => judge(first, state, true, { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
+      const r1 = await timed(tr, 'Jev 채점', () => judge([...first, ...gPicks], state, true, { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
       ({ levels, need } = r1);
       tailRaw.forEach((c, k) => { if (Number(r1.answers?.[`tm${k}`]?.noul ?? 0) >= 0.6) tailSkip.add(c.id); });
       overview = Number(r1.answers?.ov?.noul ?? 0) >= 0.6;
@@ -1074,7 +1084,7 @@
     return {
       block, picked,
       trace: {
-        cands: first.length, kept: scored.length, need, jevOk, overview, present, hint, storyLines: sLines, storyKo: sLines.ko ?? [],
+        cands: first.length, graph: gInfo ? { ...gInfo, picks: gPicks.map(f => f.id) } : null, kept: scored.length, need, jevOk, overview, present, hint, storyLines: sLines, storyKo: sLines.ko ?? [],
         items: picked.map(p => ({ id: p.u.id, ck: `${timeline[p.mi]?.key ?? 'x'}:${p.pos}`, mi: p.mi, lv: Math.round((p.t === 'f' ? (levels.get(p.u.id) ?? (p.pri === 9 ? 3 : 0)) : (p.pri === 9 ? 3 : 0)) * 100) / 100, why: why(p), text: p.t === 'f' ? p.u.sent : p.u.text, fact: p.t === 'f' ? { k: p.u.k, slots: p.u.slots } : null })),
         levels: [...levels].map(([id, lv]) => ({ id, lv: Math.round(lv * 100) / 100, text: clip(facts[id]?.sent ?? '', 140), mi: (facts[id]?.mi ?? 0) + 1 })).sort((a, b) => b.lv - a.lv),
       },
@@ -1723,7 +1733,7 @@
       let w = m[1];
       // 바로 앞 낱말이 조사 없는 한글 명사 같으면 붙인다: 천둥 소리는 → 천둥 소리
       const prev = toks[i - 1] ?? '';
-      if (/^[가-힣]{1,6}$/.test(prev) && !NOUN_PARTICLE.test(prev) && !/(자|다|요|고|며|서|지|게|까지|부터|는|은|을|를|의|에|가|도|만|로)$/u.test(prev) && tagWordOk(prev) && !peopleIn(prev).length && `${prev} ${w}`.length <= 14) w = `${prev} ${w}`;
+      if (/^[가-힣]{1,6}$/.test(prev) && !NOUN_PARTICLE.test(prev) && !/(자|다|요|고|며|서|지|게|어|아|야|까지|부터|는|은|을|를|의|에|가|도|만|로)$/u.test(prev) && tagWordOk(prev) && !peopleIn(prev).length && `${prev} ${w}`.length <= 14) w = `${prev} ${w}`;
       if (/^\d+$/.test(w) || !tagWordOk(w) || peopleIn(w).length) continue;
       if (!out.includes(w)) out.push(w);
       if (out.length >= max) break;
@@ -2321,7 +2331,7 @@
         const c = chunks[ids[f.pos]];
         const sent = c ? (sentencesOfChunk(c)[f.si] ?? '') : '';
         if (isStatusLine(sent)) continue;
-        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')) });
+        facts.push({ id: facts.length, mi, key: timeline[mi].key, pos: f.pos, si: f.si, k: f.k, slots: f.s, line: factLine(f.k, f.s), sent: sent || f.s.filter(Boolean).join(' '), text: sent || f.s.filter(Boolean).join(' '), upd: !!f.u, w: f.w ?? 3, untagged: f.t === 0, vec: f.vec && f.p === prof ? unpackSigns(f.vec, VEC_BITS) : null, grams: gramsOf(sent || f.s.join(' ')), nd: f.n ?? [] });
       }
     }
   }
@@ -2411,6 +2421,23 @@
         if (j.w < WORTH_DROP) j.kind = 'skip';                       // 꺼낼 일 없음 → 버림
         else if (j.kind === 'skip' && j.w >= WORTH_LOW) j.kind = 'fact'; // 잡담처럼 보여도 꺼낼 만하면 살림
       });
+      // ② 마디 (뉴런): 꺼낼 만한 문장(1.5점 이상)만, 따로 한 번 더 묻는다.
+      //  ①에 같이 얹으면 종류 · 점수 판단이 흔들렸다 (남는 문장 7% 줄고 기존 시험 점수 하락). 서술 문장은 마디가 안 된다
+      const nj = settings.graph !== false ? part.filter(j => FACT_K[j.kind] && j.w >= WORTH_LOW && (j.cands = nodeCands(j.s)).length) : [];
+      if (nj.length) {
+        const q2 = {};
+        nj.forEach((j, k) => { q2[`nd${k}`] = { type: 'choice', instructions: `K${k}`, criteria: Object.fromEntries([...j.cands.map((w, i) => [`w${i}`, w]), ['none', 'none of these']]) }; });
+        const state2 = `[WORDS] For each Kn, pick the word in Sn that names something worth remembering later — a thing, event, place, plan, habit, or topic. Pick none for common or vague words.\n${nj.map((j, k) => `S${k}: ${j.s}`).join('\n')}`;
+        try {
+          const a2 = await callJev(state2, q2);
+          if (chatKey !== room) return 0;
+          nj.forEach((j, k) => {
+            const na = a2[`nd${k}`];
+            const np = na?.probabilities && Object.keys(na.probabilities).length ? na.probabilities : (na?.choice ? { [na.choice]: Number(na.confidence ?? 1) } : {});
+            j.nodes = Object.entries(np).filter(([key, v]) => /^w\d+$/.test(key) && v >= 0.2).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([key]) => j.cands[Number(key.slice(1))]).filter(Boolean);
+          });
+        } catch (error) { setError('마디 만들기', error); }
+      }
       // 단어 칸은 여기서 묻지 않는다 (규칙으로 정해지는 것만). 나머지는 그 기억이 쓰일 때 뒤에서 (tagLater)
       part.forEach((j, n) => {
         const kind = j.kind;
@@ -2425,7 +2452,7 @@
         if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
         if (!slots.where.length && clock.place) slots.where.push(clock.place);
         const s = ROLE_ORDER.map(r => slots[r].join(' '));
-        made.get(j.mi).push({ v: FACT_V, pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), _sent: j.s });
+        made.get(j.mi).push({ v: FACT_V, pos: j.pos, si: j.si, k: kind, s, ...(j.w < 3 ? { w: j.w } : {}), ...(UPDATE_CUE.test(j.s) ? { u: 1 } : {}), ...(TAG_KINDS.has(kind) ? { t: 0 } : {}), ...(j.nodes?.length ? { n: j.nodes } : {}), _sent: j.s });
       });
     }
     // 칸 줄 임베딩 (찾기 열쇠)
@@ -2559,6 +2586,124 @@
     let qv = [];
     try { qv = await queryVecs([memText(query).slice(0, 2000)]); } catch { }
     return retrieveFacts(qv, query, new Set(), k, timeline.length);
+  }
+
+  // ══ 마디 지도 (뉴런처럼) ══
+  //  마디 = 인물(이름) + Jev가 저장할 때 고른 낱말. 문장이 마디에 매달리고, 같은 문장에 나온 마디끼리 줄로 이어진다.
+  //  보낼 때: 장면과 가까운 마디를 추려 Jev가 "켤 마디"를 고르고 → 불이 이웃으로 퍼지고 → 켜진 마디의 문장을 모아 심사에 보탠다.
+  const graph = { key: '', nodes: new Map(), edges: new Map() };
+  const nodeVec = new Map();      // 낱말 → 부호 벡터 (이름만 임베딩)
+  let nodeVecProf = '';
+  let nodeVecLoaded = false;
+
+  function buildGraph() {
+    const key = `${facts.length}|${personList().length}|${facts[facts.length - 1]?.id ?? -1}`;
+    if (graph.key === key) return graph;
+    graph.key = key;
+    graph.nodes = new Map();
+    graph.edges = new Map();
+    const add = (label, kind, f) => { const n = graph.nodes.get(label) ?? { label, kind, sents: [], msgs: new Set() }; n.sents.push(f.id); n.msgs.add(f.mi); graph.nodes.set(label, n); };
+    graph.msgTotal = new Set(facts.map(f => f.mi)).size;
+    for (const f of facts) {
+      const labels = new Set();
+      for (const p of peopleIn(f.sent)) { if (story.people[p]?.hidden) continue; add(p, 'person', f); labels.add(p); }
+      for (const w of f.nd ?? []) { if (labels.has(w)) continue; add(w, 'word', f); labels.add(w); }
+      const ls = [...labels];
+      for (let i = 0; i < ls.length; i++) for (let j = i + 1; j < ls.length; j++) {
+        for (const [a, b] of [[ls[i], ls[j]], [ls[j], ls[i]]]) { const m = graph.edges.get(a) ?? new Map(); m.set(b, (m.get(b) ?? 0) + 1); graph.edges.set(a, m); }
+      }
+    }
+    return graph;
+  }
+  /** 마디 후보 낱말: 조사 붙은 명사(태그 규칙) + 조사 없이 쓰인 짧은 명사 ("은메달 땄어", "장학금 받았어요"). 고르는 건 Jev */
+  function nodeCands(s, max = 8) {
+    const out = tagNouns(s, 6);
+    for (const raw of String(s).replace(/\([^)]{0,40}\)/g, ' ').split(/\s+/)) {
+      if (out.length >= max) break;
+      let w = raw.replace(/[^\p{L}\p{N}]/gu, '');
+      const cut = w.replace(/(이라면|이면|이라|이랑|이야|이에요|예요|이지만|이고|이며|이나|이든|이라도)$/u, '');
+      if (cut !== w && cut.length >= 2) w = cut;
+      else if (/(다|요|어|아|지|고|며|서|면|게|던|은|는|을|를|이|가|에|의|도|만|로|와|과|랑)$/u.test(w)) continue;   // 조사 · 어미로 끝나는 건 (명사면 태그 규칙이 이미 뗐다)
+      if (!/^[가-힣A-Za-z0-9]{2,8}$/u.test(w) || /^\d+$/.test(w) || out.includes(w) || out.some(o => o.includes(w))) continue;
+      if (VERBISH.test(w) || TAG_STOP.has(w) || TAG_CUE.test(w) || peopleIn(w).length) continue;
+      out.push(w);
+    }
+    return out;
+  }
+  /** 짝 잃은 서로게이트(이모지 반쪽)를 고친다 */
+  function wellFormed(s) { s = String(s ?? ''); return s.toWellFormed ? s.toWellFormed() : s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�'); }
+  function wellFormedDeep(v) { if (typeof v === 'string') return wellFormed(v); if (Array.isArray(v)) return v.map(wellFormedDeep); if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, wellFormedDeep(x)])); return v; }
+  const cosSigns = (a, b) => { let t = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) t += a[i] * b[i]; return t / (n || 1); };
+
+  async function ensureNodeVecs(labels) {
+    const prof = embedProfile();
+    if (!nodeVecLoaded || nodeVecProf !== prof) {
+      nodeVec.clear();
+      nodeVecProf = prof;
+      try { const saved = localStore ? await localStore.getItem(`${KEY}nodevec`) : null; if (saved?.prof === prof) for (const [w, v] of Object.entries(saved.map ?? {})) nodeVec.set(w, unpackSigns(v, VEC_BITS)); } catch { }
+      nodeVecLoaded = true;
+    }
+    const miss = labels.filter(w => !nodeVec.has(w)).slice(0, 256);
+    if (!miss.length) return;
+    const vecs = await embedTexts(miss, `마디 임베딩 (${miss.length}개)`);
+    miss.forEach((w, i) => { if (vecs[i]) nodeVec.set(w, toSigns(vecs[i])); });
+    try { if (localStore) await localStore.setItem(`${KEY}nodevec`, { prof, map: Object.fromEntries([...nodeVec].slice(-4000).map(([w, v]) => [w, packSigns(v)])) }); } catch { }
+  }
+
+  /**
+   * 마디 길: 장면에 맞는 마디를 Jev가 골라 불을 켜고, 이웃으로 퍼진 만큼 문장을 모은다.
+   * 돌려주는 것: 지금 심사에 보탤 문장들 (이미 후보에 있는 건 빼고), 진단 정보
+   */
+  async function graphRecall(qv, latest, state, present, limitMi, exclude, tr) {
+    const EXP = globalThis.__JA_EXP ?? {};
+    const g = buildGraph();
+    // 익숙해짐: 메시지 8% 넘게 나오는 낱말은 배경(서술 단골) → 켜지지도 퍼지지도 않는다. 사람은 빼지 않는다
+    const common = (n) => n.kind === 'word' && n.msgs.size / Math.max(1, g.msgTotal) > (EXP.gCommon ?? 0.08);
+    const live = [...g.nodes.values()].filter(n => !common(n) && n.sents.some(id => facts[id]?.mi < limitMi));
+    const liveSet = new Set(live.map(n => n.label));
+    if (!live.length) return { picks: [], info: null };
+    try { await ensureNodeVecs(live.map(n => n.label)); } catch (error) { setError('마디 임베딩', error); }
+    // ① 지도 추리기: 내 메시지에 글자로 나온 마디 + 장면 인물 + 장면과 뜻이 가까운 마디
+    const short = new Map();
+    for (const n of live) if (latest.includes(n.label)) short.set(n.label, 9);
+    for (const p of present) if (g.nodes.has(p) && !story.people[p]?.kind?.match(/char|persona/)) short.set(p, 8);
+    const near = live.filter(n => nodeVec.has(n.label)).map(n => [n.label, Math.max(...qv.slice(0, 2).map(q => simSigns(q, nodeVec.get(n.label))))]).sort((a, b) => b[1] - a[1]);
+    for (const [w, s] of near) { if (short.size >= (EXP.gShort ?? 60)) break; if (!short.has(w)) short.set(w, s); }
+    const list = [...short.keys()];
+    if (!list.length) return { picks: [], info: null };
+    // ② Jev가 켤 마디를 고른다 (마디마다 예 / 아니오, 한 번에)
+    // 설명은 한 번만, 질문은 번호만 (질문마다 같은 문장을 되풀이하면 요청이 커진다)
+    const q = {};
+    list.forEach((w, k) => { q[`g${k}`] = { type: 'noul', instructions: `N${k}` }; });
+    const gState = `${state}\n\n[TOPICS] For each Nk below: to continue this scene well, would it help to recall what happened earlier about that person or thing?\n${list.map((w, k) => `N${k}: ${w}`).join('\n')}`;
+    let ans = {};
+    try { ans = await timed(tr, 'Jev 마디 고르기', () => callJev(gState, q), () => `마디 ${list.length}개`); } catch (error) { setError('마디 고르기', error); return { picks: [], info: null }; }
+    const act = new Map();
+    list.forEach((w, k) => { const p = Number(ans[`g${k}`]?.noul ?? 0); if (p >= (EXP.gSeed ?? 0.5)) act.set(w, p); });
+    // 직접 자극: 내 메시지에 글자 그대로 나온 마디는 Jev가 안 골라도 켜진다 (낱말 0.8 · 사람 0.6)
+    for (const n of live) if (latest.includes(n.label)) act.set(n.label, Math.max(act.get(n.label) ?? 0, n.kind === 'word' ? 0.8 : 0.6));
+    const seeds = [...act.keys()];
+    // ③ 불 퍼지기: 같이 나온 줄(강) · 뜻이 비슷한 마디(약). 줄이 많은 마디(주인공 같은)는 약하게 번진다
+    for (const s of seeds) {
+      const a0 = act.get(s);
+      const nb = g.edges.get(s) ?? new Map();
+      const maxw = Math.max(1, ...nb.values());
+      for (const [t, w] of nb) if (liveSet.has(t)) act.set(t, Math.max(act.get(t) ?? 0, (EXP.gHop ?? 0.5) * a0 * (w / maxw)));
+      const sv = nodeVec.get(s);
+      if (sv) for (const n of live) { if (n.label === s) continue; const tv = nodeVec.get(n.label); if (tv && cosSigns(sv, tv) >= (EXP.gSim ?? 0.6)) act.set(n.label, Math.max(act.get(n.label) ?? 0, (EXP.gSimHop ?? 0.3) * a0)); }
+    }
+    // ④ 켜진 마디의 문장 점수: 활성도 / log(매달린 문장 수) × 중요도. 같은 문장이 여러 번이면 최근 것만
+    const newest = new Map();
+    for (const f of facts) if (f.mi < limitMi && (newest.get(f.sent) ?? -1) < f.mi) newest.set(f.sent, f.mi);
+    const score = new Map();
+    for (const [w, a] of act) {
+      const n = g.nodes.get(w);
+      if (!n) continue;
+      const damp = Math.log2(2 + n.sents.length);
+      for (const id of n.sents) { const f = facts[id]; if (!f || f.mi >= limitMi || newest.get(f.sent) !== f.mi || exclude.has(id)) continue; score.set(id, (score.get(id) ?? 0) + a / damp); }
+    }
+    const picks = [...score].map(([id, s]) => [id, s * (0.5 + Math.min(3, worthOf(facts[id])) / 6) + facts[id].mi * 1e-6]).sort((a, b) => b[1] - a[1]).slice(0, EXP.gTake ?? 24).map(([id]) => facts[id]);
+    return { picks, info: { shortlist: list.length, seeds, lit: act.size } };
   }
 
   function inject(messages, block) {
@@ -3082,7 +3227,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.1', '2026-10-19', ['"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
+    ['1.0.1', '2026-10-19', ['기억 마디 (뉴런처럼): 저장할 때 Jev가 문장마다 기억할 낱말(물건 · 사건 · 장소 …)을 골라 인물과 함께 마디로 잇고, 보낼 때 장면에 맞는 마디를 켜서 연결된 기억을 같이 꺼내요. 메시지에 글자로 나온 마디는 바로 켜지고, 서술에 너무 자주 나오는 낱말은 배경으로 보고 안 켜요.', '처음 보는 일상 시험(질문 없이 채팅만 28턴, 블라인드 채점): 필요한 기억 19.5 → 26.5/28, 해로운 기억 1 → 0. 기존 시험 38/38 · 54/55 그대로.', '고침: 긴 세션에서 가끔 검색어 하나가 빈 값이 되어 그 턴 회상이 실패하던 문제, 이모지가 반으로 잘려 Jev가 400 오류를 내던 문제.', '"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
   ];
   const needsSetup = () => !settings.onboarded || !settings.jevKey;
@@ -3817,6 +3962,7 @@ details.more.danger summary{color:var(--tx2)}
       <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">뒤에서 정리 · 보내기는 안 느려져요</span></div>
         <div class="field inline"><div><label>인물 태그 (💚 긍정 · 💔 부정)</label><div class="help">인물마다 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓고, 그 인물이 장면에 있을 때 짧게 넣어요. 이야기 정리에 질문 몇 개만 더해요.</div></div>${sw('tags', d.tags !== false)}</div>
         <div class="field inline"><div><label>모으기 질문엔 인물 표</label><div class="help">"지금까지 만난 사람 · 한 약속 다"처럼 전체를 묻는 메시지면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 보낼 때 Jev 질문 하나가 늘어요.</div></div>${sw('overview', d.overview !== false)}</div>
+        <div class="field inline"><div><label>기억 마디 (뉴런처럼)</label><div class="help">인물 · 물건 · 사건 낱말을 마디로 이어 두고, 보낼 때 Jev가 장면에 맞는 마디를 켜면 연결된 기억까지 같이 꺼내요. "목도리 어디 갔지?" → 빌려 간 사람처럼, 말이 달라도 이어진 기억을 찾아요. Jev 사용량이 20%쯤 늘어요.</div></div>${sw('graph', d.graph !== false)}</div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><label>관계 횟수 (성인)</label><div class="help">두 사람이 실제로 관계를 가진 횟수를 세요. 회상 · 꿈 · 계획 · 농담은 안 세고, 같은 장면은 한 번만. 인물 페이지에서 고칠 수 있고, 둘이 같이 나올 때만 짧게 넣어요. 이야기 정리에 질문 하나만 더해요.</div></div>${sw('intim', d.intim)}</div>
         <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 분위기 · 꺼낼 약속을 짧게 귀띔해요. 회상과 같은 Jev 호출이라 호출 수는 안 늘어요. 이야기를 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div>
@@ -4550,7 +4696,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
