@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.0
+//@display-name 🏛️JevArchive 1.0.1
 //@api 3.0
-//@version 1.0.0
+//@version 1.0.1
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, skipStatus: true,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, skipStatus: true,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -200,6 +200,7 @@
       intim: s.intim === true,
       skipStatus: s.skipStatus !== false,
       tags: s.tags !== false,
+      overview: s.overview !== false,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
@@ -911,6 +912,20 @@
    * 회상: 이번 요청에 실린 메시지보다 앞의 칸 줄에서만 찾는다.
    *  고정 → 방금 흐름(칸 줄이 아직 없으면 원문) → Jev가 고른 칸 줄(+같은 메시지 이웃). 이야기 줄과 감독 힌트는 맨 위에 짧게.
    */
+
+  /** 모으기 질문용 인물 표: 만난 사람(처음 나온 #) · 관계 · 약속(진행 / 끝남) · 숨기는 비밀. 원문 기억과 달리 전부 모아서 보여 준다 */
+  function overviewLines() {
+    const out = ['Story overview so far (the user is looking back over the whole story; use this list, it covers everything recorded):'];
+    const ppl = personList().filter(p => !p.hidden && p.count > 0 && p.first != null).sort((a, b) => a.first - b.first).slice(0, 30);
+    if (ppl.length) out.push('People met (first seen #): ' + ppl.map(p => p.name + ' #' + (p.first + 1)).join(', '));
+    const rels = Object.values(story.pairs).filter(p => !story.people[p.a]?.hidden && !story.people[p.b]?.hidden && (p.type || Math.abs(p.aff) >= 2 || (settings.intim && p.intim?.n))).sort((a, b) => b.co - a.co).slice(0, 12);
+    for (const p of rels) out.push('Relationship ' + p.a + ' ↔ ' + p.b + ': ' + [p.type ? relEn(p) : null, affEn(p.aff), settings.intim && p.intim?.n ? 'intimate ×' + p.intim.n + ' (first #' + (p.intim.first + 1) + ', last #' + (p.intim.last + 1) + ')' : null].filter(Boolean).join(', '));
+    const pr = [...story.threads, ...memThreads()].filter(t => !isSecret(t)).sort((a, b) => a.mi - b.mi).slice(-12);
+    for (const t of pr) out.push('Promise (' + (t.status === 'open' ? 'still open' : 'done') + ') ' + (t.who || 'someone') + (t.to ? ' → ' + t.to : '') + ': "' + clip(t.text, 120) + '" (#' + (t.mi + 1) + ')');
+    const sec = [...story.threads, ...memThreads()].filter(t => isSecret(t)).sort((a, b) => a.mi - b.mi).slice(-6);
+    for (const t of sec) out.push(t.status === 'open' ? 'Secret (still hidden' + (t.who ? ', kept by ' + t.who + (t.to ? ' from ' + t.to : '') : '') + '): "' + clip(t.text, 120) + '" — keep it hidden unless the story reveals it.' : 'Secret (revealed): "' + clip(t.text, 120) + '"');
+    return out.length > 1 ? out : [];
+  }
   const MEM_LEGEND = 'Memory lines (auto-extracted from the original words, may be rough): kind/who/with/whom/when/where/what/how/why, X=empty; kind E=event A=action F=fact P=promise S=secret. Promise and secret lines start at who.';
   async function recall(windowEntries, tr) {
     const cfg = settings;
@@ -951,13 +966,16 @@
       if (factStore.has(timeline[mi].key)) break;
       for (const id of msgChunkIds(mi).slice().reverse()) { const c = cleanChunk(chunks[id]); if (c) tailRaw.push(c); if (tailRaw.length >= 6) break; }
     }
-    let levels = new Map(), need = 'none', jevOk = true, hint = null;
+    let levels = new Map(), need = 'none', jevOk = true, hint = null, overview = false;
     try {
       const tailAsk = {};
       for (const [k, c] of tailRaw.entries()) tailAsk[`tm${k}`] = { type: 'noul', instructions: `Is this interface text rather than the story itself — a menu of choices or suggested next actions for the user, a status window or stat sheet, a to-do list, or a dice roll? «${clip(c.text, 400)}»` };
+      // 모으기 질문인지 (같은 호출에 질문 하나)
+      if (cfg.story && cfg.overview !== false && latest) tailAsk.ov = { type: 'noul', instructions: `Does the user's latest message ask to list, count, or look back over many things from the whole story so far — for example everyone they have met, all promises, all relationships, or how many times something happened? «${clip(latest, 300)}»` };
       const r1 = await timed(tr, 'Jev 채점', () => judge(first, state, true, { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
       ({ levels, need } = r1);
       tailRaw.forEach((c, k) => { if (Number(r1.answers?.[`tm${k}`]?.noul ?? 0) >= 0.6) tailSkip.add(c.id); });
+      overview = Number(r1.answers?.ov?.noul ?? 0) >= 0.6;
       if (dir) {
         story.dirTurn = (story.dirTurn ?? 0) + 1;
         genreFrom(r1.answers);
@@ -986,9 +1004,13 @@
     const recalledNames = settings.story ? [...new Set(scored.slice(0, 8).flatMap(x => peopleIn(x.f.sent ?? '')))] : [];
     const sLines = storyLines(present, timeline.length, recalledNames);
     const dLine = hint ? directorLine(hint) : '';
-    const head = [...sLines.filter(l => !l.startsWith('Slots (')), ...(dLine ? [dLine] : [])];
+    const sl = sLines.filter(l => !l.startsWith('Slots ('));
+    // 모으기 질문이면 인물 표를 "지금" 바로 뒤에 (맨 나중에 잘린다), 이야기 줄 몫을 절반까지
+    const ov = overview ? overviewLines() : [];
+    const nowAt = sl[0]?.startsWith('Now:') ? 1 : 0;
+    const head = [...sl.slice(0, nowAt), ...ov, ...sl.slice(nowAt), ...(dLine ? [dLine] : [])];
     let headText = head.join('\n');
-    while (head.length && estimateTokens(headText) > cfg.budget * 0.3) { head.splice(head.length - (dLine ? 2 : 1), 1); headText = head.join('\n'); }
+    while (head.length && estimateTokens(headText) > cfg.budget * (ov.length ? 0.5 : 0.3)) { head.splice(head.length - (dLine ? 2 : 1), 1); headText = head.join('\n'); }
     let used = estimateTokens(headText) + estimateTokens(MEM_LEGEND);
 
     const units = new Map();
@@ -1031,7 +1053,7 @@
     return {
       block, picked,
       trace: {
-        cands: first.length, kept: scored.length, need, jevOk, present, hint, storyLines: sLines, storyKo: sLines.ko ?? [],
+        cands: first.length, kept: scored.length, need, jevOk, overview, present, hint, storyLines: sLines, storyKo: sLines.ko ?? [],
         items: picked.map(p => ({ id: p.u.id, ck: `${timeline[p.mi]?.key ?? 'x'}:${p.pos}`, mi: p.mi, lv: Math.round((p.t === 'f' ? (levels.get(p.u.id) ?? (p.pri === 9 ? 3 : 0)) : (p.pri === 9 ? 3 : 0)) * 100) / 100, why: why(p), text: p.t === 'f' ? p.u.sent : p.u.text, fact: p.t === 'f' ? { k: p.u.k, slots: p.u.slots } : null })),
         levels: [...levels].map(([id, lv]) => ({ id, lv: Math.round(lv * 100) / 100, text: clip(facts[id]?.sent ?? '', 140), mi: (facts[id]?.mi ?? 0) + 1 })).sort((a, b) => b.lv - a.lv),
       },
@@ -3026,6 +3048,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.1', '2026-10-19', ['"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
   ];
   const needsSetup = () => !settings.onboarded || !settings.jevKey;
@@ -3759,6 +3782,7 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>이야기</h2><span class="sp"></span><span class="meta">뒤에서 정리 · 보내기는 안 느려져요</span></div>
         <div class="field inline"><div><label>인물 태그 (💚 긍정 · 💔 부정)</label><div class="help">인물마다 좋아하는 것 · 싫어하는 것 · 좋은/나쁜 경험을 점수로 쌓고, 그 인물이 장면에 있을 때 짧게 넣어요. 이야기 정리에 질문 몇 개만 더해요.</div></div>${sw('tags', d.tags !== false)}</div>
+        <div class="field inline"><div><label>모으기 질문엔 인물 표</label><div class="help">"지금까지 만난 사람 · 한 약속 다"처럼 전체를 묻는 메시지면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 보낼 때 Jev 질문 하나가 늘어요.</div></div>${sw('overview', d.overview !== false)}</div>
         <div class="field inline"><div><label>인물 · 관계 · 약속 기록</label><div class="help">누가 나오는지, 누구와 가까워졌는지, 어떤 약속이 남았는지 정리해요. 메시지 몇 개마다 Jev 1~2번.</div></div>${sw('story', d.story)}</div>
         <div class="field inline"><div><label>관계 횟수 (성인)</label><div class="help">두 사람이 실제로 관계를 가진 횟수를 세요. 회상 · 꿈 · 계획 · 농담은 안 세고, 같은 장면은 한 번만. 인물 페이지에서 고칠 수 있고, 둘이 같이 나올 때만 짧게 넣어요. 이야기 정리에 질문 하나만 더해요.</div></div>${sw('intim', d.intim)}</div>
         <div class="field inline"><div><label>감독 힌트</label><div class="help">답장마다 템포 · 분위기 · 꺼낼 약속을 짧게 귀띔해요. 회상과 같은 Jev 호출이라 호출 수는 안 늘어요. 이야기를 내가 이끌고 싶으면 꺼 두세요.</div></div>${sw('director', d.director)}</div>
