@@ -2656,13 +2656,41 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   /** 서술 단골 낱말 (메시지 8% 넘게): 켜지지 않는다 */
   // 짧은 채팅에서는 몇 번만 나와도 8%가 넘으니, 적어도 메시지 6개에는 나와야 배경으로 본다
   const nodeIsCommon = (n, g0 = buildGraph()) => n.kind === 'word' && n.msgs.size >= 6 && n.msgs.size / Math.max(1, g0.msgTotal) > ((globalThis.__JA_EXP ?? {}).gCommon ?? 0.08);
-  const graph = { key: '', nodes: new Map(), edges: new Map() };
+  const graph = { key: '', nodes: new Map(), edges: new Map(), psig: '', pcache: new Map() };
   const nodeVec = new Map();      // 낱말 → 부호 벡터 (이름만 임베딩)
   let nodeVecProf = '';
   let nodeVecLoaded = false;
 
+  /** 사람 목록이 바뀌면 문장 → 이름 기억을 비운다 */
+  function graphPsig() { return personList().map(p => `${p.name}:${(p.aliases ?? []).join('/')}:${p.hidden ? 1 : 0}`).join('|'); }
+  function graphKey() { return `${facts.length}|${facts[facts.length - 1]?.id ?? -1}|${fnv(graphPsig())}`; }
+  /** 문장에 나온 인물 (숨긴 사람 빼고). 같은 문장은 한 번만 찾는다 (긴 채팅에서 매번 다시 찾으면 무겁다) */
+  function namesInSent(s) {
+    const ps = graphPsig();
+    if (graph.psig !== ps) { graph.psig = ps; graph.pcache = new Map(); }
+    let v = graph.pcache.get(s);
+    if (!v) { v = peopleIn(s).filter(p => !story.people[p]?.hidden); graph.pcache.set(s, v); }
+    return v;
+  }
+  const graphFresh = () => graph.key === graphKey();
+  /** 화면용: 무거운 부분(문장마다 인물 찾기)을 조금씩 나눠서 미리 해 두고 지도를 만든다 */
+  let graphWarm = null;
+  function ensureGraphAsync() {
+    if (graphFresh()) return Promise.resolve(graph);
+    if (graphWarm) return graphWarm;
+    graphWarm = (async () => {
+      const list = facts;
+      let t0 = performance.now();
+      for (let i = 0; i < list.length; i++) {
+        namesInSent(list[i].sent);
+        if (performance.now() - t0 > 12) { await new Promise(r => setTimeout(r, 0)); t0 = performance.now(); }
+      }
+      return buildGraph();
+    })().finally(() => { graphWarm = null; });
+    return graphWarm;
+  }
   function buildGraph() {
-    const key = `${facts.length}|${personList().length}|${facts[facts.length - 1]?.id ?? -1}`;
+    const key = graphKey();
     if (graph.key === key) return graph;
     graph.key = key;
     graph.nodes = new Map();
@@ -2671,7 +2699,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     graph.msgTotal = new Set(facts.map(f => f.mi)).size;
     for (const f of facts) {
       const labels = new Set();
-      for (const p of peopleIn(f.sent)) { if (story.people[p]?.hidden) continue; add(p, 'person', f); labels.add(p); }
+      for (const p of namesInSent(f.sent)) { add(p, 'person', f); labels.add(p); }
       for (const w of f.nd ?? []) { if (labels.has(w)) continue; add(w, 'word', f); labels.add(w); }
       const ls = [...labels];
       for (let i = 0; i < ls.length; i++) for (let j = i + 1; j < ls.length; j++) {
@@ -3321,7 +3349,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 화면이 멈추지 않게 바로 그린 뒤 자주 나온 마디부터 조금씩 자리를 잡아요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
+    ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 움직임 없이 한 번에 그려서 가벼워요 (빽빽한 2000개도 0.2초쯤). 마디 탭은 틀부터 바로 열리고, 지도는 뒤에서 만들어 채워요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
     ['1.0.1', '2026-10-19', ['기억 마디 (뉴런처럼): 저장할 때 Jev가 문장마다 기억할 낱말(물건 · 사건 · 장소 …)을 골라 인물과 함께 마디로 잇고, 보낼 때 장면에 맞는 마디를 켜서 연결된 기억을 같이 꺼내요. 메시지에 글자로 나온 마디는 바로 켜지고, 서술에 너무 자주 나오는 낱말은 배경으로 보고 안 켜요.', '처음 보는 일상 시험(질문 없이 채팅만 28턴, 블라인드 채점): 필요한 기억 19.5 → 26.5/28, 해로운 기억 1 → 0. 기존 시험 38/38 · 54/55 그대로.', '고침: 긴 세션에서 가끔 검색어 하나가 빈 값이 되어 그 턴 회상이 실패하던 문제, 이모지가 반으로 잘려 Jev가 400 오류를 내던 문제.', '"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
   ];
@@ -3729,13 +3757,10 @@ details.more.danger summary{color:var(--tx2)}
 
 
   const fitView = (xs, ys, m0 = 56) => { const x0 = Math.min(...xs) - m0, x1 = Math.max(...xs) + m0, y0 = Math.min(...ys) - m0, y1 = Math.max(...ys) + m0 + 18; const w = Math.max(360, x1 - x0), h = Math.max(300, y1 - y0); return { x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - h / 2, W: w, H: h }; };
-  // ══ 마디 지도 (캔버스) ══
-  //  ① 바로 그리고 프레임마다 조금씩 자리 잡는다 (화면이 안 멈춘다)
-  //  ② 자주 나온 마디부터 보이고, 나머지는 프레임마다 40개씩 붙는다
-  //  ③ 미는 힘은 Barnes-Hut (먼 무리는 한 덩어리로 계산)
-  //  ④ 그림 요소 대신 캔버스 한 장 (2000개까지)
+  // ══ 마디 지도 (캔버스, 움직임 없음) ══
+  //  자리는 한 번에 계산해서 바로 그린다: 자주 나온 마디부터, 이어진 마디 곁에 붙이고, 이웃이 없으면 가운데서 나선으로.
+  //  겹친 것만 몇 번 밀어 준다. 다시 그리는 건 끌기 · 확대할 때만. 2000개까지
   const NMAP_MAX = 2000;
-  let nmapRunning = false;
 
   function nodeMapPick() {
     const gr = buildGraph();
@@ -3744,10 +3769,21 @@ details.more.danger summary{color:var(--tx2)}
     let pick = all.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr));
     if (q) {
       const hit = new Set(pick.filter(nd => nd.label.includes(q)).map(nd => nd.label));
-      for (const h of [...hit]) for (const [w] of [...(gr.edges.get(h) ?? new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10)) hit.add(w);
+      for (const h of [...hit]) for (const w of topLinks(gr.edges.get(h), 10, null)) hit.add(w[0]);
       pick = [...hit].map(w => gr.nodes.get(w)).filter(Boolean).sort((a, b) => b.sents.length - a.sents.length);
     }
     return { gr, pick: pick.slice(0, Math.min(NMAP_MAX, ui.nodesN ?? 30)) };
+  }
+  /** 가장 굵은 줄 k개 (정렬 없이 훑으면서) */
+  function topLinks(m, k, keep) {
+    const out = [];
+    if (!m) return out;
+    for (const [w, c] of m) {
+      if (keep && !keep.has(w)) continue;
+      if (out.length < k) { out.push([w, c]); out.sort((a, b) => b[1] - a[1]); }
+      else if (c > out[k - 1][1]) { out[k - 1] = [w, c]; out.sort((a, b) => b[1] - a[1]); }
+    }
+    return out;
   }
 
   function makeNodeSim(gr, pick, sig, prev) {
@@ -3755,202 +3791,140 @@ details.more.danger summary{color:var(--tx2)}
     const max = Math.max(1, ...pick.map(nd => nd.sents.length));
     const nodes = pick.map((nd, i) => {
       const o = old.get(nd.label);
-      return { id: nd.label, kind: nd.kind, hue: hueOf(nd.label), bg: nodeIsCommon(nd, gr), count: nd.sents.length, rank: i,
-        r: 12 + Math.sqrt(nd.sents.length / max) * 16, x: o?.x, y: o?.y, vx: 0, vy: 0 };
+      return { id: nd.label, kind: nd.kind, hue: hueOf(nd.label), bg: nodeIsCommon(nd, gr), count: nd.sents.length, rank: i, r: 12 + Math.sqrt(nd.sents.length / max) * 16, x: o?.x, y: o?.y, kids: 0 };
     });
     const byId = new Map(nodes.map(n => [n.id, n]));
-    // 줄: 마디마다 가장 굵은 줄 4개까지
     const eset = new Map();
-    for (const n of nodes) for (const [w, c] of [...(gr.edges.get(n.id) ?? new Map())].filter(([w]) => byId.has(w)).sort((a, b) => b[1] - a[1]).slice(0, 4)) {
+    for (const n of nodes) for (const [w, c] of topLinks(gr.edges.get(n.id), 4, byId)) {
       const key = n.id < w ? `${n.id}\u0001${w}` : `${w}\u0001${n.id}`;
       if (!eset.has(key)) eset.set(key, { a: n, b: byId.get(w), w: c });
     }
     const edges = [...eset.values()];
-    const kept = nodes.filter(n => n.x != null).length;
-    return { sig, nodes, edges, byId, shown: kept === nodes.length ? nodes.length : Math.min(nodes.length, Math.max(kept, 60)), alpha: kept > nodes.length * 0.8 ? 0.35 : 1, cv: null, frames: 0 };
-  }
-
-  // 새로 붙는 마디의 첫 자리: 이미 자리 잡은 이웃 곁, 없으면 해바라기 씨 모양으로
-  function placeNode(sim, n) {
-    if (n.x != null) return;
-    const nb = sim.edges.find(e => (e.a === n && e.b.x != null) || (e.b === n && e.a.x != null));
-    const o = nb ? (nb.a === n ? nb.b : nb.a) : null;
-    const t = n.rank * 2.399963;
-    if (o) { n.x = o.x + Math.cos(t) * (o.r + n.r + 30); n.y = o.y + Math.sin(t) * (o.r + n.r + 30); }
-    else { const d = 34 * Math.sqrt(n.rank + 1); n.x = Math.cos(t) * d; n.y = Math.sin(t) * d; }
-  }
-
-  // ── Barnes-Hut 사분 나무 ──
-  function buildQuad(list) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const n of list) { if (n.x < x0) x0 = n.x; if (n.x > x1) x1 = n.x; if (n.y < y0) y0 = n.y; if (n.y > y1) y1 = n.y; }
-    const size = Math.max(x1 - x0, y1 - y0, 1) + 1;
-    const root = { x: x0, y: y0, s: size, m: 0, cx: 0, cy: 0, kids: null, item: null };
-    const insert = (q, n, depth) => {
-      if (!q.kids && !q.item && q.m === 0) { q.item = n; q.m = 1; q.cx = n.x; q.cy = n.y; return; }
-      if (!q.kids) {
-        if (depth > 24) { q.m++; q.cx += (n.x - q.cx) / q.m; q.cy += (n.y - q.cy) / q.m; return; }   // 같은 자리에 겹친 것
-        const h = q.s / 2;
-        q.kids = [0, 1, 2, 3].map(k => ({ x: q.x + (k & 1) * h, y: q.y + (k >> 1) * h, s: h, m: 0, cx: 0, cy: 0, kids: null, item: null }));
-        const it = q.item; q.item = null;
-        if (it) { const k = (it.x >= q.x + h ? 1 : 0) + (it.y >= q.y + h ? 2 : 0); insert(q.kids[k], it, depth + 1); }
-      }
-      q.m++; q.cx += (n.x - q.cx) / q.m; q.cy += (n.y - q.cy) / q.m;
-      const h = q.s / 2;
-      const k = (n.x >= q.x + h ? 1 : 0) + (n.y >= q.y + h ? 2 : 0);
-      insert(q.kids[k], n, depth + 1);
-    };
-    for (const n of list) insert(root, n, 0);
-    return root;
-  }
-  function repel(q, n, k) {
-    if (!q || q.m === 0 || q.item === n) return;
-    const dx = q.cx - n.x, dy = q.cy - n.y;
-    const d2 = dx * dx + dy * dy + 0.01;
-    if (q.item || (q.s * q.s) / d2 < 0.81) {   // 멀면 한 덩어리 (θ = 0.9)
-      const f = (k * q.m) / d2;
-      n.vx -= dx * f; n.vy -= dy * f;
-      return;
-    }
-    if (q.kids) for (const c of q.kids) repel(c, n, k);
-  }
-
-  function stepNodeSim(sim) {
-    const list = sim.nodes.slice(0, sim.shown);
-    if (!list.length) return;
-    const a = sim.alpha;
-    const root = buildQuad(list);
-    for (const n of list) repel(root, n, 900 * a);
-    for (const e of sim.edges) {
-      if (e.a.rank >= sim.shown || e.b.rank >= sim.shown) continue;
-      const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
-      const d = Math.hypot(dx, dy) || 1;
-      const rest = e.a.r + e.b.r + 50;
-      const f = ((d - rest) / d) * 0.06 * a * (0.5 + Math.min(1, Math.log2(1 + e.w) / 3));
-      e.a.vx += dx * f; e.a.vy += dy * f; e.b.vx -= dx * f; e.b.vy -= dy * f;
-    }
-    for (const n of list) { n.vx -= n.x * 0.012 * a; n.vy -= n.y * 0.012 * a; }
-    // 겹침: 칸 나눔으로 가까운 것끼리만 (동그라미 + 이름표 자리)
-    const cell = 80, grid = new Map();
-    for (const n of list) { const key = `${Math.floor(n.x / cell)},${Math.floor(n.y / cell)}`; (grid.get(key) ?? grid.set(key, []).get(key)).push(n); }
-    for (const n of list) {
-      const gx = Math.floor(n.x / cell), gy = Math.floor(n.y / cell);
-      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const m of grid.get(`${gx + i},${gy + j}`) ?? []) {
-        if (m.rank <= n.rank) continue;
-        const dx = m.x - n.x, dy = m.y - n.y, d = Math.hypot(dx, dy) || 0.01, need = n.r + m.r + 20;
-        if (d >= need) continue;
-        const p = ((need - d) / d) * 0.5;
-        n.x -= dx * p; n.y -= dy * p; m.x += dx * p; m.y += dy * p;
+    // 자리 (한 번에)
+    const nb = new Map(nodes.map(n => [n, []]));
+    for (const e of edges) { nb.get(e.a).push(e); nb.get(e.b).push(e); }
+    let free = 0;
+    for (const n of nodes) {
+      if (n.x != null) continue;
+      let o = null, ow = -1;
+      for (const e of nb.get(n)) { const m = e.a === n ? e.b : e.a; if (m.x != null && e.w > ow) { o = m; ow = e.w; } }
+      if (o) {
+        const t = o.kids * 0.9 + (fnv(o.id) % 628) / 100, ring = Math.floor(o.kids / 7);
+        const d = o.r + n.r + 26 + ring * 26;
+        n.x = o.x + Math.cos(t) * d; n.y = o.y + Math.sin(t) * d; o.kids++;
+      } else {
+        const t = free * 2.399963, d = 70 * Math.sqrt(free);
+        n.x = Math.cos(t) * d; n.y = Math.sin(t) * d; free++;
       }
     }
-    for (const n of list) { n.vx *= 0.6; n.vy *= 0.6; n.x += n.vx; n.y += n.vy; }
-    // 많을수록 빨리 식힌다 (300개 넘으면 계산 한 번이 무거워서, 자리 잡는 시간을 줄인다)
-    sim.alpha = Math.max(0, a * (sim.nodes.length > 300 ? 0.97 : 0.985));
+    // 겹친 것만 몇 번 밀기 (칸 나눔이라 가까운 것끼리만 본다)
+    for (let pass = 0; pass < 6; pass++) {
+      const cell = 70, grid = new Map();
+      for (const n of nodes) { const key = `${Math.floor(n.x / cell)},${Math.floor(n.y / cell)}`; (grid.get(key) ?? grid.set(key, []).get(key)).push(n); }
+      let moved = false;
+      for (const n of nodes) {
+        const gx = Math.floor(n.x / cell), gy = Math.floor(n.y / cell);
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const m of grid.get(`${gx + i},${gy + j}`) ?? []) {
+          if (m.rank <= n.rank) continue;
+          let dx = m.x - n.x, dy = m.y - n.y, d = Math.hypot(dx, dy);
+          const need = n.r + m.r + 16;
+          if (d >= need) continue;
+          if (d < 0.01) { dx = Math.cos(m.rank); dy = Math.sin(m.rank); d = 1; }
+          const p = (need - d) / d / 2;
+          n.x -= dx * p; n.y -= dy * p; m.x += dx * p; m.y += dy * p; moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    return { sig, nodes, edges, cv: null };
   }
 
-  function nmapColors() {
-    const cs = getComputedStyle(document.documentElement);
-    const v = (k, d) => (cs.getPropertyValue(k) || '').trim() || d;
-    return { ac: v('--ac', '#8c9eff'), tx: v('--tx', '#e8ebf2'), tx2: v('--tx2', '#a3aabb'), line: '#56608a', bgln: '#4a5168' };
-  }
-  function nmapCamera(sim, w, h) {
+  function fitNodeCamera(sim, w, h) {
     const cam = (ui.ncam ??= { cx: 0, cy: 0, k: 1 });
-    if (ui.ncamUser) return cam;
-    // 자리 없는 마디는 빼고, 숫자가 깨졌으면 처음으로
     if (![cam.cx, cam.cy, cam.k].every(Number.isFinite)) Object.assign(cam, { cx: 0, cy: 0, k: 1 });
-    const list = sim.nodes.slice(0, sim.shown).filter(n => Number.isFinite(n.x) && Number.isFinite(n.y));
-    if (!list.length) return cam;
+    if (ui.ncamUser || !sim.nodes.length || !w || !h) return cam;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const n of list) { x0 = Math.min(x0, n.x - n.r); x1 = Math.max(x1, n.x + n.r); y0 = Math.min(y0, n.y - n.r); y1 = Math.max(y1, n.y + n.r + 18); }
-    const k = Math.min(1.6, (w - 40) / Math.max(1, x1 - x0), (h - 40) / Math.max(1, y1 - y0));
-    cam.cx += ((x0 + x1) / 2 - cam.cx) * 0.25; cam.cy += ((y0 + y1) / 2 - cam.cy) * 0.25; cam.k += (k - cam.k) * 0.25;
+    for (const n of sim.nodes) { x0 = Math.min(x0, n.x - n.r); x1 = Math.max(x1, n.x + n.r); y0 = Math.min(y0, n.y - n.r); y1 = Math.max(y1, n.y + n.r + 18); }
+    cam.k = Math.min(1.6, (w - 40) / Math.max(1, x1 - x0), (h - 40) / Math.max(1, y1 - y0));
+    cam.cx = (x0 + x1) / 2; cam.cy = (y0 + y1) / 2;
     return cam;
   }
   function drawNodeMap(sim) {
-    const cv = sim.cv;
-    if (!cv) return;
+    const cv = sim?.cv;
+    if (!cv?.isConnected) return;
     const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
     const w = cv.clientWidth, h = cv.clientHeight;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
     const ctx = cv.getContext('2d');
-    const C = sim.colors ??= nmapColors();
-    const cam = nmapCamera(sim, w, h);
-    const sx = (x) => (x - cam.cx) * cam.k + w / 2, sy = (y) => (y - cam.cy) * cam.k + h / 2;
+    const cam = fitNodeCamera(sim, w, h);
+    const k = cam.k, ox = w / 2 - cam.cx * k, oy = h / 2 - cam.cy * k;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    // 줄: 굵기별로 묶어서 한 번에 (줄마다 따로 그리면 무겁다)
     ctx.lineCap = 'round';
-    for (const e of sim.edges) {
-      if (e.a.rank >= sim.shown || e.b.rank >= sim.shown || !Number.isFinite(e.a.x) || !Number.isFinite(e.b.x)) continue;
-      ctx.globalAlpha = Math.min(0.85, 0.25 + e.w / 12);
-      ctx.strokeStyle = C.line;
-      ctx.lineWidth = Math.max(0.6, (1 + Math.min(5, Math.log2(1 + e.w))) * Math.min(1, cam.k));
-      ctx.beginPath(); ctx.moveTo(sx(e.a.x), sy(e.a.y)); ctx.lineTo(sx(e.b.x), sy(e.b.y)); ctx.stroke();
+    ctx.strokeStyle = '#56608a';
+    const buckets = new Map();
+    for (const e of sim.edges) { const b = Math.min(5, Math.round(Math.log2(1 + e.w))); (buckets.get(b) ?? buckets.set(b, []).get(b)).push(e); }
+    for (const [b, list] of buckets) {
+      ctx.globalAlpha = Math.min(0.85, 0.3 + b * 0.12);
+      ctx.lineWidth = Math.max(0.6, (1 + b) * Math.min(1, k));
+      ctx.beginPath();
+      for (const e of list) { ctx.moveTo(e.a.x * k + ox, e.a.y * k + oy); ctx.lineTo(e.b.x * k + ox, e.b.y * k + oy); }
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    const many = sim.shown > 120;
-    for (let i = 0; i < sim.shown; i++) {
-      const n = sim.nodes[i];
-      if (!Number.isFinite(n.x)) continue;
-      const x = sx(n.x), y = sy(n.y), r = n.r * cam.k;
+    const many = sim.nodes.length > 120;
+    ctx.textAlign = 'center';
+    for (const n of sim.nodes) {
+      const x = n.x * k + ox, y = n.y * k + oy, r = n.r * k;
       if (x < -r - 60 || x > w + r + 60 || y < -r - 40 || y > h + r + 40) continue;   // 화면 밖은 안 그린다
       ctx.globalAlpha = n.bg ? 0.5 : 1;
       ctx.beginPath(); ctx.arc(x, y, Math.max(2, r), 0, Math.PI * 2);
       ctx.fillStyle = n.kind === 'person' ? `hsl(${n.hue} 45% 24%)` : 'rgba(140,158,255,.16)';
       ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = n.kind === 'person' ? `hsl(${n.hue} 70% 55%)` : (n.bg ? C.bgln : C.ac);
-      ctx.setLineDash(n.bg ? [4, 4] : []);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      if (r >= 3) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = n.kind === 'person' ? `hsl(${n.hue} 70% 55%)` : (n.bg ? '#4a5168' : '#8c9eff');
+        ctx.setLineDash(n.bg ? [4, 4] : []);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       if (r >= 9) {
         ctx.fillStyle = n.kind === 'person' ? `hsl(${n.hue} 90% 86%)` : '#c9d2ff';
         ctx.font = `700 ${n.kind === 'person' ? Math.min(16, r * 0.9) : Math.min(13, r * 0.8)}px system-ui, sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.textBaseline = 'middle';
         ctx.fillText(n.kind === 'person' ? n.id.slice(0, 1) : String(n.count), x, y + 1);
       }
-      // 이름표: 많을 때는 큰 마디 · 확대했을 때만 (글자가 겹쳐 읽을 수 없게 되지 않게)
-      if (!many || n.rank < 60 || cam.k >= 1.1) {
-        if (r >= 6) {
-          ctx.fillStyle = C.tx2; ctx.font = `600 ${Math.max(11, Math.min(14, 12 * cam.k))}px system-ui, sans-serif`;
-          ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-          ctx.fillText(n.id.length > 9 ? `${n.id.slice(0, 9)}…` : n.id, x, y + r + 4);
-        }
+      // 이름표: 많을 때는 큰 마디이거나 확대했을 때만 (겹쳐서 못 읽게 되지 않게)
+      if (r >= 6 && (!many || n.rank < 60 || k >= 1.1)) {
+        ctx.fillStyle = '#a3aabb'; ctx.font = `600 ${Math.max(11, Math.min(14, 12 * k))}px system-ui, sans-serif`;
+        ctx.textBaseline = 'top';
+        ctx.fillText(n.id.length > 9 ? `${n.id.slice(0, 9)}…` : n.id, x, y + r + 4);
       }
     }
     ctx.globalAlpha = 1;
     const st = document.getElementById('nmap-stat');
-    if (st) st.textContent = `마디 ${sim.shown}/${sim.nodes.length}${sim.alpha > 0.05 || sim.shown < sim.nodes.length ? ' · 자리 잡는 중…' : ''}`;
+    if (st) st.textContent = `마디 ${sim.nodes.length}개 · 줄 ${sim.edges.length}개`;
   }
-
-  function nodeMapLoop() {
-    const sim = ui.nsim;
-    if (!sim?.cv?.isConnected) { nmapRunning = false; return; }
-    const t0 = performance.now();
-    if (sim.shown < sim.nodes.length) { const to = Math.min(sim.nodes.length, sim.shown + 40); for (let i = sim.shown; i < to; i++) placeNode(sim, sim.nodes[i]); sim.shown = to; sim.alpha = Math.max(sim.alpha, 0.5); }
-    for (const n of sim.nodes.slice(0, sim.shown)) placeNode(sim, n);
-    // 한 프레임에 8ms까지만 계산 (나머지는 다음 프레임)
-    do { if (sim.alpha > 0.01) stepNodeSim(sim); } while (sim.alpha > 0.01 && performance.now() - t0 < 8);
-    drawNodeMap(sim);
-    sim.dirty = false;
-    if (sim.alpha > 0.01 || sim.shown < sim.nodes.length || (!ui.ncamUser && sim.frames++ < 30)) requestAnimationFrame(nodeMapLoop);
-    else nmapRunning = false;
-  }
-  function kickNodeMap() { if (!nmapRunning && ui.nsim?.cv?.isConnected) { nmapRunning = true; requestAnimationFrame(nodeMapLoop); } }
 
   function bindNodeMap() {
     const cv = document.getElementById('nmap');
     if (!cv) return;
+    try { bindNodeMapNow(cv); } catch (error) { const st = document.getElementById('nmap-stat'); if (st) st.textContent = `그림 오류: ${String(error?.message ?? error)}`; setError('마디 그림', error); }
+  }
+  function bindNodeMapNow(cv) {
     const { gr, pick } = nodeMapPick();
     const sig = `${gr.key}|${pick.length}|${pick[0]?.label ?? ''}|${pick[pick.length - 1]?.label ?? ''}|${ui.nodesQ ?? ''}|${ui.nodesBg ? 1 : 0}`;
     if (!ui.nsim || ui.nsim.sig !== sig) { ui.nsim = makeNodeSim(gr, pick, sig, ui.nsim); ui.ncamUser = false; }
     const sim = ui.nsim;
-    if (sim.cv !== cv) { sim.cv = cv; sim.colors = null; sim.frames = 0; }
+    sim.cv = cv;
     if (!cv.__bound) {
       cv.__bound = true;
       const pts = new Map();
-      let start = null, moved = false, pinch = null;
+      let start = null, moved = false, pinch = null, raf = 0;
+      const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; drawNodeMap(ui.nsim); }); };   // 끌 때는 한 프레임에 한 번만
       const toWorld = (cx, cy) => { const b = cv.getBoundingClientRect(), cam = ui.ncam; return { x: (cx - b.left - b.width / 2) / cam.k + cam.cx, y: (cy - b.top - b.height / 2) / cam.k + cam.cy }; };
-      const zoomAt = (cx, cy, f) => { const cam = ui.ncam, p = toWorld(cx, cy); const k2 = Math.max(0.08, Math.min(4, cam.k * f)); cam.cx = p.x - (p.x - cam.cx) * cam.k / k2; cam.cy = p.y - (p.y - cam.cy) * cam.k / k2; cam.k = k2; ui.ncamUser = true; drawNodeMap(ui.nsim); };
+      const zoomAt = (cx, cy, f) => { const cam = ui.ncam, p = toWorld(cx, cy); const k2 = Math.max(0.05, Math.min(4, cam.k * f)); cam.cx = p.x - (p.x - cam.cx) * cam.k / k2; cam.cy = p.y - (p.y - cam.cy) * cam.k / k2; cam.k = k2; ui.ncamUser = true; redraw(); };
       cv.addEventListener('pointerdown', (e) => { pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pts.size === 1) { start = { x: e.clientX, y: e.clientY, cx: ui.ncam.cx, cy: ui.ncam.cy }; moved = false; } if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: ui.ncam.k }; } });
       cv.addEventListener('pointermove', (e) => {
         if (!pts.has(e.pointerId)) return;
@@ -3962,26 +3936,24 @@ details.more.danger summary{color:var(--tx2)}
         if (!moved) cv.setPointerCapture?.(e.pointerId);
         moved = true; ui.ncamUser = true;
         ui.ncam.cx = start.cx - dx / ui.ncam.k; ui.ncam.cy = start.cy - dy / ui.ncam.k;
-        drawNodeMap(ui.nsim);
+        redraw();
       });
       const end = (e) => {
         const wasTap = pts.size === 1 && !moved && start;
         pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) start = null;
         if (!wasTap || e.type !== 'pointerup') return;
-        // 누른 자리에 가장 가까운 마디
-        const p = toWorld(e.clientX, e.clientY), s = ui.nsim;
+        const p = toWorld(e.clientX, e.clientY);
         let best = null, bd = Infinity;
-        for (const n of s.nodes.slice(0, s.shown)) { const d = Math.hypot(n.x - p.x, n.y - p.y) - n.r; if (d < bd) { bd = d; best = n; } }
+        for (const n of ui.nsim.nodes) { const d = Math.hypot(n.x - p.x, n.y - p.y) - n.r; if (d < bd) { bd = d; best = n; } }
         if (best && bd <= 8 / ui.ncam.k) { ui.sheet = { type: 'node', name: best.id }; render(); }
       };
       cv.addEventListener('pointerup', end);
       cv.addEventListener('pointercancel', end);
       cv.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
-      globalThis.addEventListener?.('resize', () => { if (ui.nsim?.cv?.isConnected) drawNodeMap(ui.nsim); });
+      globalThis.addEventListener?.('resize', () => drawNodeMap(ui.nsim));
+      try { new ResizeObserver(() => drawNodeMap(ui.nsim)).observe(cv); } catch { setTimeout(() => drawNodeMap(ui.nsim), 120); }
     }
-    for (const n of sim.nodes.slice(0, sim.shown)) placeNode(sim, n);   // 첫 그림 전에 자리부터
     drawNodeMap(sim);
-    kickNodeMap();
   }
 
   // ══ 마디 탭 ══
@@ -3990,7 +3962,15 @@ details.more.danger summary{color:var(--tx2)}
     const all = [...gr.nodes.values()];
     return { gr, all, people: all.filter(n => n.kind === 'person').length, words: all.filter(n => n.kind === 'word').length, common: all.filter(n => nodeIsCommon(n, gr)).length };
   }
+  /** 마디 탭: 틀부터 바로. 지도 계산이 아직이면 "불러오는 중"을 보이고 뒤에서 만든 뒤 다시 그린다. 오류는 화면에 */
   function renderNodes() {
+    if (settings.graph !== false && !graphFresh()) {
+      ensureGraphAsync().then(() => { if (ui.open && ui.view === 'nodes') render(); }).catch(error => { ui.nodesErr = String(error?.message ?? error); if (ui.view === 'nodes') render(); });
+      return `<div class="seg" style="margin-bottom:12px"><button class="${(ui.nodesMode ?? 'map') === 'map' ? 'on' : ''}" data-act="nodes-mode" data-v="map">그림</button><button class="${ui.nodesMode === 'list' ? 'on' : ''}" data-act="nodes-mode" data-v="list">목록</button></div><section class="card"><div class="empty"><div class="big">🕸️</div><b>마디 불러오는 중…</b>기억 ${facts.length}개에서 마디를 모으고 있어요.</div></section>`;
+    }
+    try { return renderNodesNow(); } catch (error) { return `<div class="alert bad"><span class="ic">${icon('alert')}</span><div class="t"><b>마디 탭을 그리다 오류가 났어요</b><div class="d">${escapeHtml(String(error?.message ?? error))}</div></div></div>`; }
+  }
+  function renderNodesNow() {
     if (settings.graph === false) return `<div class="card"><div class="empty"><div class="big">🕸️</div><b>기억 마디가 꺼져 있어요</b>설정 › 이야기에서 "기억 마디"를 켜면, 인물 · 물건 · 사건 낱말로 기억을 이어서 말이 달라도 연결된 기억을 찾아요.</div></div>`;
     const { gr, all, people, words, common } = nodeStats();
     const back = nodeBacklog().length;
@@ -4005,7 +3985,7 @@ details.more.danger summary{color:var(--tx2)}
     const head = `${fill}<div class="kpis" style="margin-bottom:14px">${kpiBox(all.length, '마디')}${kpiBox(people, '인물')}${kpiBox(words, '낱말')}${kpiBox(common, '배경 낱말')}</div>
       <div class="seg" style="margin-bottom:12px"><button class="${mode === 'map' ? 'on' : ''}" data-act="nodes-mode" data-v="map">그림</button><button class="${mode === 'list' ? 'on' : ''}" data-act="nodes-mode" data-v="list">목록</button></div>`;
     if (mode === 'map') return `${head}<section class="card graphcard">
-        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2>${(() => { const avail = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr)).length; const mx = Math.max(10, Math.min(NMAP_MAX, avail)); const cur = Math.min(mx, ui.nodesN ?? 30); return `<label class="rng">보일 마디 <input type="range" id="nn" min="10" max="${mx}" step="1" value="${cur}" aria-label="보일 마디 수"><b id="nn-v">${cur}</b><span class="dim">/ ${avail > NMAP_MAX ? `${NMAP_MAX} (많아서 ${NMAP_MAX}까지)` : avail}</span></label>`; })()}<button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
+        <div class="ch" style="flex-wrap:wrap;gap:8px"><h2>마디 지도</h2>${(() => { const avail = list.filter(nd => ui.nodesBg || !nodeIsCommon(nd, gr)).length; const mx = Math.max(10, Math.min(NMAP_MAX, avail)); const cur = Math.min(mx, ui.nodesN ?? 30); if (avail <= 10) return ''; return `<label class="rng">보일 마디 <input type="range" id="nn" min="10" max="${mx}" step="1" value="${cur}" aria-label="보일 마디 수"><b id="nn-v">${cur}</b><span class="dim">/ ${avail > NMAP_MAX ? `${NMAP_MAX} (많아서 ${NMAP_MAX}까지)` : avail}</span></label>`; })()}<button class="btn sm g" data-act="nodes-bg">${ui.nodesBg ? '배경 낱말 숨기기' : '배경 낱말도'}</button><span class="sp"></span><span class="meta">끌기 · 확대 · 눌러서 자세히</span></div>
         <div style="padding:0 16px"><div class="search" style="margin:10px 0 4px">${icon('search', 18)}<input id="nq" placeholder="마디 찾기 (그 마디와 이웃만 그려요)" value="${escapeHtml(ui.nodesQ ?? '')}" autocomplete="off"></div></div>
         <div class="nmapwrap"><canvas class="nmap" id="nmap" role="img" aria-label="기억 마디 그림"></canvas><div class="nmapstat" id="nmap-stat"></div></div>
         <div class="legend"><span><i style="background:var(--ac)"></i>낱말 (안 숫자 = 붙은 기억)</span><span>동그라미 = 인물</span><span>선 굵기 = 같은 문장에 나온 횟수</span><div class="gtools"><button class="iconbtn" data-act="nzoom" data-f="1.25" aria-label="확대">${icon('plus', 18)}</button><button class="iconbtn" data-act="nzoom" data-f="0.8" aria-label="축소">${icon('minus', 18)}</button><button class="iconbtn" data-act="nreset" aria-label="처음 위치">${icon('refresh', 18)}</button></div></div>
@@ -4767,7 +4747,7 @@ details.more.danger summary{color:var(--tx2)}
       case 'greset': if (el.dataset.g === 'ngraph') { ui.ngraph = { x: 0, y: 0, k: 1 }; ui.nlayout = null; } else { ui.graph = { x: 0, y: 0, k: 1 }; ui.layout = null; } render(); return;
       case 'nodes-mode': ui.nodesMode = el.dataset.v; render(); return;
       case 'nzoom': { const cam = (ui.ncam ??= { cx: 0, cy: 0, k: 1 }); cam.k = Math.max(0.08, Math.min(4, cam.k * Number(el.dataset.f))); ui.ncamUser = true; if (ui.nsim) drawNodeMap(ui.nsim); return; }
-      case 'nreset': ui.ncamUser = false; if (ui.nsim) { ui.nsim.frames = 0; kickNodeMap(); } return;
+      case 'nreset': ui.ncamUser = false; if (ui.nsim) drawNodeMap(ui.nsim); return;
       case 'nodes-bg': ui.nodesBg = !ui.nodesBg; ui.nlayout = null; render(); return;
       case 'toggle-enabled': await saveSettings({ ...settings, enabled: !settings.enabled }); render(); return;
       case 'dircards': ui.sheet = null; ui.view = 'cards'; render(); document.getElementById('sc').scrollTop = 0; return;
@@ -5154,7 +5134,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, stepNodeSim, drawNodeMap, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
