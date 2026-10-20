@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.6
+//@display-name 🏛️JevArchive 1.0.7
 //@api 3.0
-//@version 1.0.6
+//@version 1.0.7
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -206,7 +206,7 @@
       rescue: s.rescue !== false,
       keepLevel: Number.isFinite(Number(s.keepLevel)) ? Math.min(2.5, Math.max(0.5, Number(s.keepLevel))) : 1.3,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
-      memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
+      memPreset: ['light', 'balanced', 'rich', 'max', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
       jevParallel: clampNum(s.jevParallel, 2, 1, 10),
       jevPrice: Number.isFinite(Number(s.jevPrice)) && Number(s.jevPrice) >= 0 && s.jevPrice !== '' && s.jevPrice != null ? Number(s.jevPrice) : 0.042,
@@ -250,6 +250,7 @@
     light: { label: '가볍게', desc: '토큰을 아껴요', budget: 400, candidates: 12, neighbor: 0, tailTokens: 80 },
     balanced: { label: '균형', desc: '추천', budget: 600, candidates: 16, neighbor: 1, tailTokens: 120 },
     rich: { label: '꼼꼼하게', desc: '더 많이 기억해요', budget: 1200, candidates: 24, neighbor: 1, tailTokens: 200 },
+    max: { label: '완전 꼼꼼하게', desc: '거의 다 넣어요 (Jev 더 씀)', budget: 13000, candidates: 48, neighbor: 2, tailTokens: 1500, keepLevel: 1.0 },
   };
   const presetOf = (d) => Object.entries(MEMORY_PRESETS).find(([, p]) => ['budget', 'candidates', 'neighbor', 'tailTokens'].every(k => Number(d[k]) === p[k]))?.[0] ?? 'custom';
 
@@ -1253,6 +1254,9 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   const SPEAKER_LINE = /^[ \t]*(?:[-*•>]+[ \t]*)?(?:\*\*|__)?([가-힣A-Za-z][가-힣A-Za-z0-9·._ -]{0,14}?)(?:\*\*|__)?[ \t]*(?:\(([^)\n]{1,20})\))?[ \t]*(?:\*\*|__)?[ \t]*[:：][ \t]*(["“”'‘’「『][\s\S]*)$/u;
   const NAME_STOP = new Set(['이름', '직책', '날짜', '기록', '장부', '문서', '일지', '메모', '물건', '주인', '화물', '항목', '내용', '표식', '도구', '장소', '위치', '선원', '주민', '손님', '사람들', '아이', '남자', '여자', '상대', '누군가', '모두들', '자기', '본인', '그녀', '그는', '그가', '그를', '그의', '우리', '저희', '너희', '사람', '자신', '모두', '이것', '그것', '저것', '여기', '거기', '저기', '오늘', '내일', '어제', '지금', '이제', '나중', '처음', '마지막', '하나', '무엇', '누구', '어디', '언제', '정말', '그냥', '조금', '아주', '너무', '다시', '서로', '모습', '생각', '마음', '목소리', '얼굴', '시간', '이야기', '대답', '질문', '사실', '문제', '이유', '순간', '정도', '부분', '자리', '주변', '앞', '뒤', '안', '밖', '위', '아래', 'user', 'char', 'narrator', 'system', '나레이터', '시스템', '상태창']);
   const PERSON_PARTICLE = /^([가-힣]{2,4})(은|는|이|가|에게|한테|께서|와|과|의|를|을|도|아|야|씨|님)$/u;
+  // 한 글자 이름 (벤 · 솔 · 휘): 흔한 한 글자 낱말은 뺀다
+  const ONE_PARTICLE = /^([가-힣])(은|는|이|가|에게|한테|께서|와|과|를|을|도|아|야|씨|님)$/u;
+  const ONE_STOP = new Set('그 나 너 저 이 얘 걔 쟤 애 말 길 손 눈 물 불 집 밤 낮 문 칼 활 숲 강 꽃 빛 땅 몸 맘 꿈 돈 옷 책 차 배 비 해 달 별 피 일 것 수 때 곳 앞 뒤 위 밑 속 안 밖 옆 끝 줄 맛 힘 잠 술 밥 빵 국 약 탑 성 벽 뼈 팔 발 귀 코 입 목 등 털 왕 신 적 개 새 소 곰 뱀 쥐 닭 벌 돌 흙 산 섬 들 논 밭 숯 재 연 표 값 덕 탓 뜻 꼴 판 편 쪽 번 분 초 날 해 달 철 형 씨 님 놈 년 분 시 회'.split(' '));
 
   function personList() { return Object.values(story.people); }
   function nameForms(p) { return [p.name, ...(p.aliases ?? [])].filter(Boolean); }
@@ -1296,9 +1300,10 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   function nameCandidates(text) {
     const out = new Map();
     for (const raw of String(text ?? '').split(/[^가-힣]+/).filter(Boolean)) {
-      const m = PERSON_PARTICLE.exec(raw);
+      const m = PERSON_PARTICLE.exec(raw) ?? ONE_PARTICLE.exec(raw);
       if (!m) continue;
       const w = m[1];
+      if (w.length === 1 && ONE_STOP.has(w)) continue;
       if (NAME_STOP.has(w) || story.asked.includes(w) || story.rejected.includes(w)) continue;
       if (personList().some(p => nameForms(p).includes(w))) continue;
       out.set(w, (out.get(w) ?? 0) + 1);
@@ -1478,7 +1483,13 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     for (const mi of mis) for (const n of speakersIn(timeline[mi].text)) addPerson(n);
     const cands = new Map();
     for (const c of runChunks) for (const [w, n] of nameCandidates(c.text)) cands.set(w, (cands.get(w) ?? 0) + n);
-    const ask = [...cands].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([w]) => w);
+    // 이름 후보는 정리할 때마다 누적해서 센다 (한 번에 1~2번씩만 나와도 모이면 묻는다). 두 글자 이상 2번, 한 글자 3번
+    const seen = (story.candSeen ??= {});
+    for (const [w, n] of cands) seen[w] = (seen[w] ?? 0) + n;
+    const known = new Set(personList().flatMap(p => nameForms(p)));
+    const ask = Object.entries(seen).filter(([w, n]) => n >= (w.length === 1 ? 3 : 2) && !known.has(w) && ![...known].some(f => f.length > w.length && f.startsWith(w)) &&!story.asked.includes(w) && !story.rejected.includes(w)).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([w]) => w);
+    for (const w of ask) delete seen[w];
+    if (Object.keys(seen).length > 600) story.candSeen = Object.fromEntries(Object.entries(seen).sort((a, b) => b[1] - a[1]).slice(0, 300));
     // 배경 글: 조각마다 P번호. 질문은 번호로 가리킨다 (같은 글을 질문마다 또 보내지 않는다). 너무 길면 조각마다 고르게 줄인다
     const STATE_MAX = 24000;
     const pText = runChunks.map(c => cleanChunk(c)?.text ?? '');
@@ -1612,7 +1623,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           const text = clip(unquote(withPrev(j.sents, k) ?? j.c.text), 160);
           if (story.threads.some(t => t.text === text)) return;
           let w = who && who !== 'unclear' ? who : selfAuthor(j.c);
-          if (w && isRecipient(j.c.text, w) && !speakersIn(j.c.text).includes(w)) w = '';
+          if (w && (isRecipient(j.c.text, w) || isVocative(j.c.text, w)) && !speakersIn(j.c.text).includes(w) && !isSubject(j.c.text, w)) w = '';
           story.threads.push({ id: ++story.seq, text, who: w, to: to && to !== 'none' && to !== w ? to : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
@@ -1637,7 +1648,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           const [who] = topChoice(a[`sw${i}`]);
           const [from] = topChoice(a[`sf${i}`]);
           let w = who && who !== 'unclear' ? who : selfAuthor(j.c);
-          if (w && isRecipient(j.c.text, w) && !speakersIn(j.c.text).includes(w)) w = '';
+          if (w && (isRecipient(j.c.text, w) || isVocative(j.c.text, w)) && !speakersIn(j.c.text).includes(w) && !isSubject(j.c.text, w)) w = '';
           story.threads.push({ id: ++story.seq, kind: 'secret', text, who: w, to: from && from !== 'unclear' && from !== 'everyone' && from !== w ? from : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         cardJobs.forEach((j, i) => {
@@ -1816,6 +1827,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     return out;
   }
   const speakerOf = (mi, sent) => speakerMap(mi).get(unquote(sent)) ?? null;
+  /** 그 조각에서 주어로 나오나 (리안은 · 리안이 …) */
+  const isSubject = (text, name) => new RegExp(`(^|[^가-힣])${escRe(name)}(?:은|는|이|가|께서)(?=[^가-힣]|$)`, 'u').test(String(text));
   /** "예린이한테는" · "미로에게" · "선생님께"처럼 말을 받는 쪽 (받침 뒤 "이"도) */
   const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const isRecipient = (text, name) => new RegExp(`${escRe(name)}이?(?:한테|에게|께|더러)`, 'u').test(String(text));
@@ -3428,6 +3441,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.7', '2026-10-20', ['서술에서도 한 글자 이름(벤 · 솔)을 찾아요. 흔한 한 글자 낱말(손 · 길 · 말 …)은 빼고, 사람처럼 3번 넘게 나올 때만 Jev에게 사람 이름인지 물어요.', '"리안, 사실 나…"처럼 이름을 부르는 말의 그 사람은 비밀 · 약속 주인으로 보지 않아요.', '이름 후보를 정리할 때마다 쌓아서 세요. 한 번에 한두 번씩만 나오는 인물도 모이면 찾아요.', '기억 넣기에 "완전 꼼꼼하게" 추가: 기억 블록 13000토큰까지, 심사 후보 48개, 넣는 기준 1.0으로 거의 다 넣어요. Jev를 30~50% 더 써요.', '놓친 기억 줍기는 Voyage 임베딩일 때만 켜지고, 아니면 설정에 이유가 보여요.', '이미 아는 인물 이름의 앞부분(루시아 → 루시)은 새 인물로 안 봐요.']],
     ['1.0.6', '2026-10-20', ['놓친 기억 줍기: Jev가 필요 없다고 자른 기억 중 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요 (예: "다온 선배가 고양이 알레르기 있었지?" → "예린은 고양이 털 알레르기"). 임베딩이 Voyage일 때만, 설정에서 끌 수 있어요.', '기억을 넣는 기준을 1.5 → 1.3으로 조금 낮췄어요. 아슬아슬하게 잘리던 기억(예: 쌀국수 ↔ 고수 못 먹음)이 들어가요.', '"예린이한테는 말하지 마"의 예린은 숨기는 사람이 아니라 모르는 쪽으로 봐요. 비밀 장면에서 나온 기억 줄에는 (secret — 예린 must not learn it) 표시를 붙여 메인 모델이 함부로 말하지 않게 해요.']],
     ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.', '말한 사람 꼬리표: 대사 이름표(세아: "…")가 있으면 따옴표가 닫힐 때까지 그 사람 말로 봐서, 기억 문장의 "누가" 칸과 기억에서 온 약속 · 비밀 주인에 써요. "도윤아," · "미로한테는"처럼 부르거나 받는 이름은 주인으로 안 봐요. 이미 저장된 기억에도 바로 적용돼요.', '기억 블록의 약속 · 비밀 줄은 칸 줄 대신 원래 문장으로 보내요 (기억 형식이 칸일 때만 칸 줄).', 'Jev 토큰 약 40% 절약: 기억 형식이 문장(기본)이면 낱말마다 묻던 칸 나누기를 안 해요. 모델에게 가는 기억은 원래 문장이라 결과는 같고, 기억 탭의 칸 표시만 덜 자세해져요.']],
     ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
@@ -4502,7 +4516,7 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
-        <div class="field inline"><div><label>놓친 기억 줍기</label><div class="help">Jev가 "필요 없음"으로 자른 기억 중, 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요. 임베딩이 Voyage일 때만 돼요 (리랭커 비용은 아주 작아요).</div></div>${sw('rescue', d.rescue)}</div>
+        <div class="field inline"><div><label>놓친 기억 줍기</label><div class="help">Jev가 "필요 없음"으로 자른 기억 중, 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요. 임베딩이 Voyage일 때만 돼요 (리랭커 비용은 아주 작아요).</div></div>${/voyageai\.com/.test(embedConfig(d).endpoint ?? '') ? sw('rescue', d.rescue) : '<span class="dim xs">Voyage 임베딩일 때만</span>'}</div>
         <div class="field inline"><div><label>작업 중 동그라미</label><div class="help">뒤에서 일하는 동안 채팅 화면 오른쪽 위에 도는 동그라미를 띄워요. <b style="color:#ef4444">빨강</b> 기억 저장 · <b style="color:#a855f7">보라</b> 이야기 정리 · <b style="color:#22c55e">초록</b> 마디 채우기. 누르면 이 화면이 열려요.</div></div>${sw('busySpin', d.busySpin)}</div>
         <div class="field"><label>Jev 가격 (100만 토큰당 달러)</label><div class="help">"지금" 탭의 예상 비용 계산에만 써요.</div><div class="row" style="gap:6px;margin-top:8px"><span class="dim">$</span><input class="inp" type="number" inputmode="decimal" step="any" min="0" data-field="jevPrice" value="${escapeHtml(d.jevPrice)}" style="max-width:110px"><button class="btn sm g" data-act="usage-reset">사용량 초기화</button></div></div>
         <div class="field inline"><div><label>JevArchive 사용</label><div class="help">끄면 요청을 건드리지 않아요.</div></div>${sw('enabled', d.enabled)}</div>
@@ -4934,7 +4948,7 @@ details.more.danger summary{color:var(--tx2)}
         const p = MEMORY_PRESETS[el.dataset.v];
         if (!p) return;
         const base = currentDraft();
-        const next = { ...base, memPreset: el.dataset.v, budget: p.budget, candidates: p.candidates, neighbor: p.neighbor, tailTokens: p.tailTokens };
+        const next = { ...base, memPreset: el.dataset.v, budget: p.budget, candidates: p.candidates, neighbor: p.neighbor, tailTokens: p.tailTokens, keepLevel: p.keepLevel ?? 1.3 };
         if (ui.onboard) { ui.onboard.d = next; render(); return; }
         ui.draft = next;
         render();
