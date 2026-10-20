@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.9
+//@display-name 🏛️JevArchive 1.0.10
 //@api 3.0
-//@version 1.0.9
+//@version 1.0.10
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1103,7 +1103,12 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     const head = [...sl.slice(0, nowAt), ...ov, ...sl.slice(nowAt), ...(dLine ? [dLine] : [])];
     let headText = head.join('\n');
     while (head.length && estimateTokens(headText) > cfg.budget * (ov.length ? 0.5 : 0.3)) { head.splice(head.length - (dLine ? 2 : 1), 1); headText = head.join('\n'); }
-    let used = estimateTokens(headText) + estimateTokens(MEM_LEGEND);
+    // 지금 메시지 번호: #가 이것에 가까울수록 최근 (지금 #123이면 #111은 방금, #6은 한참 전)
+    const nowNo = `Current message: #${limitMi + windowEntries.length} (a # close to this is recent, a small # is long ago)`;
+    // 요약 줄(관계 · 약속 · 비밀 · 태그 · 인물 표)은 Jev 추측이라 틀릴 수 있다고 알린다. 원문 기억 줄에는 안 붙인다 (기억 자체를 덜 믿게 되니까)
+    const guessed = head.some(l => /↔|^(?:Open promise|Secret|Promise \(|Relationship|People met)|^\S+ tags:/.test(l));
+    const caveat = guessed ? 'Relationship / promise / secret / tag lines are auto-summarized and may be wrong; if they conflict with the # excerpts or the current chat, trust those.' : '';
+    let used = estimateTokens(headText) + estimateTokens(MEM_LEGEND) + estimateTokens(nowNo) + estimateTokens(caveat);
 
     const units = new Map();
     const factCost = (f) => estimateTokens(cfg.memForm === 'sentence' ? f.sent : f.line) + 3;
@@ -1143,11 +1148,9 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     // 방금 흐름(창 바로 앞 메시지들)은 따로 묶는다: 예전 기억과 섞이면 메인 모델이 뭐가 최근인지 모른다
     const lines = picked.filter(p => p.pri !== 0).map(lineOf);
     const recentLines = picked.filter(p => p.pri === 0).map(lineOf);
-    // 지금 메시지 번호: #가 이것에 가까울수록 최근 (지금 #123이면 #111은 방금, #6은 한참 전)
-    const nowNo = `Current message: #${limitMi + windowEntries.length} (a # close to this is recent, a small # is long ago)`;
     const slotted = (!asSent && picked.some(p => p.t === 'f')) || head.some(l => /^(Open promise|Secret):/.test(l) && l.includes('/'));
     const note = cfg.note ? `${cfg.note}\n` : '';
-    const body = [slotted ? MEM_LEGEND : '', nowNo, headText, lines.length ? `Memories:\n${lines.join('\n')}` : '', recentLines.length ? `Recent flow (right before the current chat, oldest first):\n${recentLines.join('\n')}` : ''].filter(Boolean).join('\n');
+    const body = [slotted ? MEM_LEGEND : '', nowNo, caveat, headText, lines.length ? `Memories:\n${lines.join('\n')}` : '', recentLines.length ? `Recent flow (right before the current chat, oldest first):\n${recentLines.join('\n')}` : ''].filter(Boolean).join('\n');
     const block = headText || lines.length || recentLines.length ? `[Memory]\n${note}${body}\n[/Memory]` : '';
     const why = (p) => (p.pri === 9 ? 'pin' : p.pri === 0 ? 'tail' : p.pri === 0.5 ? 'near' : 'pick');
     return {
@@ -3483,6 +3486,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.10', '2026-10-21', ['메인 모델에게 관계 · 약속 · 비밀 · 태그 줄은 자동 요약이라 틀릴 수 있다고 한 줄 알려 줘요. 원문 기억 줄이나 지금 채팅과 다르면 그쪽을 믿게. 원문 기억 줄에는 안 붙여요.']],
     ['1.0.9', '2026-10-21', ['미리 보기: "이번 답장에 넣은 기억" 칸에 보낼 말을 적고 Enter. 채팅 끝 메시지 몇 개와 같이 어떤 기억이 들어갈지 초록 (미리 보기)로 보여 줘요. 모델에는 안 보내고, 실제로 넣은 기록도 안 바뀌어요.', '대사 이름표: "미나: …" 대사가 여러 문장이어도 둘째 문장부터 이름이 붙어요.', '메인 모델에게 지금 메시지 번호를 알려 주고, 방금 흐름(바로 앞 메시지들)은 예전 기억과 따로 묶어 넣어요.', '서술 뒤 같은 줄에 "이름:"이 오면 서술까지 이름으로 잡던 것 고침.', '기억 마디에서 Jev 대신 임베딩 · 규칙을 써요. 기억할 낱말은 규칙으로, 켤 마디는 장면과 뜻이 가까운 순서로 골라요. 시험해 보니 기억은 같거나 조금 더 잘 꺼내고, Jev 호출은 약 40% 줄고 더 빨라졌어요.']],
     ['1.0.8', '2026-10-20', ['"완전 꼼꼼하게"의 기억 예산을 13000 → 3000토큰으로 줄였어요. 메인 모델 입력이 너무 커지지 않게. 이미 골라 둔 사람도 자동으로 바뀌어요.']],
     ['1.0.7', '2026-10-20', ['서술에서도 한 글자 이름(벤 · 솔)을 찾아요. 흔한 한 글자 낱말(손 · 길 · 말 …)은 빼고, 사람처럼 3번 넘게 나올 때만 Jev에게 사람 이름인지 물어요.', '"리안, 사실 나…"처럼 이름을 부르는 말의 그 사람은 비밀 · 약속 주인으로 보지 않아요.', '이름 후보를 정리할 때마다 쌓아서 세요. 한 번에 한두 번씩만 나오는 인물도 모이면 찾아요.', '기억 넣기에 "완전 꼼꼼하게" 추가: 기억 블록 3000토큰까지 (1.0.8부터), 심사 후보 48개, 넣는 기준 1.0으로 거의 다 넣어요. Jev를 30~50% 더 써요.', '놓친 기억 줍기는 Voyage 임베딩일 때만 켜지고, 아니면 설정에 이유가 보여요.', '이미 아는 인물 이름의 앞부분(루시아 → 루시)은 새 인물로 안 봐요.']],
