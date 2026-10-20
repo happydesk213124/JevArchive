@@ -1357,7 +1357,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   }
   /** 모델에게 보낼 칸 줄: 누가/누구랑/누구에게/언제/어디서/무엇을/어떻게/왜 순서로 슬래시, 빈 칸은 X, 끝쪽 빈 칸은 생략 */
   function tagLine(t) {
-    if (!t.tags?.some(g => g.r !== 'none')) return t.text;
+    if (settings.memForm !== 'slots' || !t.tags?.some(g => g.r !== 'none')) return t.text;
     const slots = ROLE_ORDER.map(r => t.tags.filter(g => g.r === r).map(g => g.w).join(' ') || 'X');
     while (slots.length && slots[slots.length - 1] === 'X') slots.pop();
     return slots.join('/');
@@ -1766,6 +1766,31 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     }
     return out;
   }
+  /** 문장마다 말한 사람: "세아 (shy): "…" 로 시작하면 따옴표가 닫힐 때까지 세아. 메시지마다 한 번 계산해 둔다 (원문 지문으로) */
+  const speakerCache = new Map();
+  function speakerMap(mi) {
+    const m = timeline[mi];
+    if (!m) return new Map();
+    const key = `${m.key}|${personList().length}`;
+    if (speakerCache.has(key)) return speakerCache.get(key);
+    const known = (n) => { const p = story.people[n]; return !!p && !p.hidden && !isTitleName(p.name); };
+    const out = new Map();
+    let speaker = null;
+    for (const id of msgChunkIds(mi)) for (const s of sentencesOf(stripStatus(chunks[id].text))) {
+      const sp = /^([^\s:("“]{1,12})\s*(?:\([^)]{0,20}\))?\s*:/u.exec(s);
+      if (sp) speaker = peopleIn(sp[1]).find(known) ?? null;
+      if (speaker) out.set(unquote(s), speaker);
+      const qn = (s.match(/["“”]/g) ?? []).length;
+      if (sp ? qn % 2 === 0 : qn % 2 === 1) speaker = null;
+    }
+    if (speakerCache.size > 400) speakerCache.clear();
+    speakerCache.set(key, out);
+    return out;
+  }
+  const speakerOf = (mi, sent) => speakerMap(mi).get(unquote(sent)) ?? null;
+  /** "도윤아, …" · "도윤, …" · "도윤 씨!" 처럼 이름을 부르는 말이면 그 사람은 듣는 쪽 */
+  const isVocative = (sent, name) => { const e = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); return new RegExp(`${e}(?:아|야|씨|님)?\\s*[,，!！~]|${e}(?:아|야)(?=[\\s"”]|$)`, 'u').test(sent); };
+
   /** 이번에 물을 문장들 (감정 말 센 것 먼저) */
   function tagCandidates(runChunks) {
     const main = new Set(personList().filter(p => !p.hidden && !isTitleName(p.name) && (p.count >= 3 || p.kind === 'char' || p.kind === 'persona')).map(p => p.name));
@@ -2472,6 +2497,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           if (!slots[r]) r = mustKeep(w) ? 'what' : null;
           if (r) slots[r].push(w.replace(/[.!?…]+$/u, ''));
         });
+        // "누가" 칸이 비었으면 대사 이름표의 말한 사람 (문장 안에는 이름이 없어도)
+        if (!slots.who.length) { const sp = speakerOf(j.mi, j.s); if (sp) slots.who.push(sp); }
         const clock = storyClock(j.mi + 1);
         if (!slots.when.length && (clock.d || clock.t)) slots.when.push(clockLabel({ d: clock.d, t: clock.t }));
         if (!slots.where.length && clock.place) slots.where.push(clock.place);
@@ -3366,7 +3393,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.']],
+    ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.', '말한 사람 꼬리표: 대사 이름표(세아: "…")가 있으면 따옴표가 닫힐 때까지 그 사람 말로 봐서, 기억 문장의 "누가" 칸과 기억에서 온 약속 · 비밀 주인에 써요. "도윤아," · "미로한테는"처럼 부르거나 받는 이름은 주인으로 안 봐요. 이미 저장된 기억에도 바로 적용돼요.', '기억 블록의 약속 · 비밀 줄은 칸 줄 대신 원래 문장으로 보내요 (기억 형식이 칸일 때만 칸 줄).']],
     ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
     ['1.0.3', '2026-10-20', ['열기 · 닫기가 바로: 열면 가진 기억으로 먼저 그리고, 채팅 다시 읽기는 뒤에서 해요 (위에 움직이는 줄과 "채팅 읽는 중…", 처음 열 때나 다른 채팅이면 본문에 "채팅 불러오는 중…"). 닫기는 바로 닫히고 설정 저장은 닫은 뒤에 마무리해요.', '마디 그림이 열 때마다 모양이 달라지던 것 고침: 같은 마디면 언제나 같은 모양이에요.']],
     ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 움직임 없이 한 번에 그려서 가벼워요 (빽빽한 2000개도 0.2초쯤). 마디 탭은 틀부터 바로 열리고, 지도는 뒤에서 만들어 채워요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
@@ -3579,9 +3606,12 @@ details.more.danger summary{color:var(--tx2)}
       if ((f.w ?? 3) < WORTH_LOW) continue;   // 기억 탭에서 회색(가벼운 말)은 빼고
       const kind = f.k === 'secret' ? 'secret' : 'promise';
       if (caught.has(`${kind === 'secret' ? 's' : 'p'}:${f.mi}`)) continue;
+      // 주인: 대사 이름표의 말한 사람 → 사용자가 쓴 글이면 사용자 → 문장에 나온 이름 중 부르는 말이 아닌 것. 부르는 이름은 상대 쪽
       const names = peopleIn(f.sent).filter(n => !isTitleName(n));
       const me = timeline[f.mi]?.role === 'user' && personaCache ? (personList().find(p => p.kind === 'persona')?.name ?? personaCache) : null;
-      const who = me ?? names[0] ?? '';
+      // "미로한테는 말하지 마"처럼 한테 · 에게 · 께가 붙은 이름도 듣는 쪽
+      const listener = (n) => isVocative(f.sent, n) || new RegExp(`${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:한테|에게|께|더러)`, 'u').test(f.sent);
+      const who = speakerOf(f.mi, f.sent) ?? me ?? names.find(n => !listener(n)) ?? '';
       if (!who && kind !== 'secret') continue;   // 약속은 누구 약속인지 모르면 안 넣는다 (기억 탭에는 그대로). 비밀은 누가 숨기는지 몰라도 넣는다
       const to = names.find(n => n !== who) ?? null;
       const key = factKey(f);
