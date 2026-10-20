@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.2
+//@display-name 🏛️JevArchive 1.0.3
 //@api 3.0
-//@version 1.0.2
+//@version 1.0.3
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -3349,6 +3349,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.3', '2026-10-20', ['열기 · 닫기가 바로: 열면 가진 기억으로 먼저 그리고, 채팅 다시 읽기는 뒤에서 해요 (위에 "채팅 읽는 중…"). 닫기는 바로 닫히고 설정 저장은 닫은 뒤에 마무리해요.', '마디 그림이 열 때마다 모양이 달라지던 것 고침: 같은 마디면 언제나 같은 모양이에요.']],
     ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 움직임 없이 한 번에 그려서 가벼워요 (빽빽한 2000개도 0.2초쯤). 마디 탭은 틀부터 바로 열리고, 지도는 뒤에서 만들어 채워요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
     ['1.0.1', '2026-10-19', ['기억 마디 (뉴런처럼): 저장할 때 Jev가 문장마다 기억할 낱말(물건 · 사건 · 장소 …)을 골라 인물과 함께 마디로 잇고, 보낼 때 장면에 맞는 마디를 켜서 연결된 기억을 같이 꺼내요. 메시지에 글자로 나온 마디는 바로 켜지고, 서술에 너무 자주 나오는 낱말은 배경으로 보고 안 켜요.', '처음 보는 일상 시험(질문 없이 채팅만 28턴, 블라인드 채점): 필요한 기억 19.5 → 26.5/28, 해로운 기억 1 → 0. 기존 시험 38/38 · 54/55 그대로.', '고침: 긴 세션에서 가끔 검색어 하나가 빈 값이 되어 그 턴 회상이 실패하던 문제, 이모지가 반으로 잘려 Jev가 400 오류를 내던 문제.', '"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
     ['1.0.0', '2026-10-19', ['정식 출시 🎉']],
@@ -3366,9 +3367,16 @@ details.more.danger summary{color:var(--tx2)}
     if (view) ui.view = view;
     ui.draft = null;
     if (needsSetup() && !ui.onboard) ui.onboard = { step: 0, d: { ...settings } };
-    try { await refreshChat(); } catch (error) { setError('채팅 확인', error); }
-    render();
+    // 가진 걸로 먼저 그린다. 채팅 다시 읽기(긴 채팅은 오래 걸림)는 뒤에서 하고 끝나면 다시 그린다
+    ui.reading = true;
+    try { render(); } catch (error) { setError('화면', error); }
     if (restoredNote) { toast(restoredNote); restoredNote = ''; }
+    void rereadInBackground();
+  }
+  let rereading = null;
+  function rereadInBackground() {
+    rereading ??= refreshChat().catch(error => { setError('채팅 확인', error); }).finally(() => { rereading = null; ui.reading = false; if (ui.open) { if (ui.onboard || ui.view === 'settings') document.querySelector('#ja-top .reading')?.remove(); else render(); } });
+    return rereading;
   }
   /** 입력 중인 화면(설정 · 시작 안내)은 뒤에서 일이 끝나도 다시 그리지 않는다 (입력이 끊기지 않게) */
   function softRender() { if (ui.open && !ui.onboard && ui.view !== 'settings') render(); }
@@ -3396,7 +3404,7 @@ details.more.danger summary{color:var(--tx2)}
           ${VIEWS.map(([id, lb, ic]) => `<button class="navi${ui.view === id && !ui.onboard ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic)}${lb}${id === 'people' && st.people ? `<span class="cnt">${st.people}</span>` : id === 'promises' && nThreads ? `<span class="cnt">${nThreads}</span>` : ''}</button>`).join('')}
           <div class="grow"></div>
           <div class="railstat">${statusPill(st)}<div class="xs dim" style="margin-top:8px">${label || '채팅방을 열어 주세요'}</div></div>`);
-    setHtml(document.getElementById('ja-top'), `<h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1><span class="sub">${label}</span>${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}<button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>`);
+    setHtml(document.getElementById('ja-top'), `<h1>${ui.onboard ? '시작하기' : TITLES[ui.view]}</h1><span class="sub">${label}</span>${ui.reading ? '<span class="pill reading"><i></i>채팅 읽는 중…</span>' : ''}${ui.saved ? `<span class="pill ok"><i></i>${escapeHtml(ui.saved)}</span>` : ''}<button class="iconbtn" data-act="close" aria-label="닫기">${icon('close')}</button>`);
     const tabbar = document.getElementById('ja-tabbar');
     tabbar.style.display = ui.onboard ? 'none' : '';
     setHtml(tabbar, ui.onboard ? '' : VIEWS.filter(([id]) => id !== 'news' || ui.view === 'news').map(([id, lb, ic]) => `<button class="tab${ui.view === id ? ' on' : ''}" data-act="go" data-view="${id}">${icon(ic, 22)}${lb}${badge[id] && ui.view !== id ? '<i class="dot"></i>' : ''}</button>`).join(''));
@@ -4620,7 +4628,7 @@ details.more.danger summary{color:var(--tx2)}
     const act = el.dataset.act;
     if (act === 'sheet-bg' && e.target !== el) return;
     switch (act) {
-      case 'close': await leaveSettings(); ui.open = false; ui.sheet = null; await R.hideContainer(); return;
+      case 'close': { const saving = leaveSettings(); ui.open = false; ui.sheet = null; await R.hideContainer(); await saving; return; }
       case 'go': await leaveSettings(); ui.view = el.dataset.view; ui.sheet = null; render(); document.getElementById('sc')?.scrollTo?.(0, 0); return;
       case 'go-settings': ui.view = 'settings'; render(); return;
       case 'sheet-bg': case 'sheet-close': ui.sheet = null; render(); return;
