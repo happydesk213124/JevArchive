@@ -877,12 +877,18 @@
       relOut.push(`${p.a} ↔ ${p.b}: ${[p.type ? relEn(p) : null, `${affEn(p.aff)} (${p.aff > 0 ? '+' : ''}${p.aff})`, settings.intim && p.intim?.n ? `intimate ×${p.intim.n}` : null].filter(Boolean).join(', ')}`);
       relOut.ko.push({ t: `${p.a} ↔ ${p.b} · ${[p.type ? relKo(p) : null, `${affLabel(p.aff)} ${p.aff > 0 ? '+' : ''}${p.aff}`, settings.intim && p.intim?.n ? `관계 ${p.intim.n}번` : null].filter(Boolean).join(' · ')}`, c: p.aff >= 2 ? 'warm' : p.aff <= -2 ? 'cold' : '' });
     });
+    // 근거 모양 (시험 스위치): 바로 앞 문장을 같이, 주인은 확실할 때만
+    const EVI = !!(globalThis.__JA_EXP ?? {}).evidence;
+    const prevOf = (t) => { const ss = sentencesOf(stripStatus(timeline[t.mi]?.text ?? '')).map(unquote); const i = ss.findIndex(x => x.includes(String(t.text).slice(0, 24))); return i > 0 ? clip(ss[i - 1], 120) : ''; };
+    const evi = (t) => { const p = prevOf(t); return `${p ? `${p} ` : ''}${t.text}`; };
+    const sure = (t) => t.src !== 'mem' || t.sure;
     const near = (t) => present.includes(t.who) || (t.to && present.includes(t.to)) || present.some(n => nameForms(story.people[n] ?? { name: n, aliases: [] }).some(f => f.length >= 2 && String(t.text).includes(f)));
     const memOpen = settings.story ? memThreads().filter(t => t.status === 'open') : [];
     // 비밀: 숨기는 사람이 장면에 있을 때 (숨기는 사람을 모르면 글에 장면 인물이 나올 때). 화면 칩에는 내용을 안 보여 준다 (스포일러)
     const keeperNear = (t) => (t.who ? present.includes(t.who) : near(t));
     for (const t of [...openSecrets(), ...memOpen.filter(t => isSecret(t))].filter(keeperNear).sort((a, b) => a.mi - b.mi).slice(-2)) {
       const from = t.to ?? 'the others';
+      if (EVI) { out.push(`Secret (#${t.mi + 1}${t.who && sure(t) ? `, kept by ${t.who}${t.to ? ` from ${t.to}` : ''}` : ''}): "${evi(t)}" — still hidden; keep it hidden unless the story itself reveals it.`); out.ko.push({ t: `비밀 · ${t.who || '누군가'}`, c: 'sec' }); continue; }
       if (!t.who) { out.push(`Secret (kept hidden so far): "${tagLine(t)}" — keep it hidden unless the story itself reveals it.`); out.ko.push({ t: '비밀 · 숨기는 중', c: 'sec' }); continue; }
       out.push(`Secret: ${t.who} hides from ${from}: "${tagLine(t)}" — ${from} does not know this yet. Keep it hidden unless the story itself reveals it.`);
       out.ko.push({ t: `비밀 · ${t.who} (${t.to ?? '모두'} 모르게)`, c: 'sec' });
@@ -899,7 +905,8 @@
     }
     const th = [...openThreads(), ...memOpen.filter(t => !isSecret(t))].filter(near).sort((a, b) => a.mi - b.mi).slice(-3);
     for (const t of th) {
-      out.push(`Open promise: ${t.who || 'someone'}${t.to ? ` → ${t.to}` : ''}: "${tagLine(t)}" (#${t.mi + 1})`);
+      if (EVI) out.push(`Open promise (#${t.mi + 1}${t.who && sure(t) ? `, ${t.who}${t.to ? ` → ${t.to}` : ''}` : ''}): "${evi(t)}"`);
+      else out.push(`Open promise: ${t.who || 'someone'}${t.to ? ` → ${t.to}` : ''}: "${tagLine(t)}" (#${t.mi + 1})`);
       out.ko.push({ t: `약속 · ${t.who}${t.to ? ` → ${t.to}` : ''}: ${clip(t.text, 48)}`, c: 'gold' });
     }
     // 관계는 맨 뒤: 예산이 모자라면 관계부터 빠진다
@@ -1631,7 +1638,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       } catch (error) { setError('이야기 분석', error); }
     }
     // 6하원칙 칸: 칸이 없는 열린 약속 · 비밀 (새로 생긴 것 먼저) 몇 개를 한 번에. 실패해도 원문으로 쓴다
-    const tagJobs = story.threads.filter(t => t.status === 'open' && !t.tags).slice(-4);
+    const tagJobs = settings.memForm === 'slots' ? story.threads.filter(t => t.status === 'open' && !t.tags).slice(-4) : [];
     if (tagJobs.length) {
       const tq = {};
       tagJobs.forEach((t, i) => tagWords(t.text).forEach((w, k) => { tq[`w${i}_${k}`] = { type: 'choice', instructions: `In the sentence «${unquote(t.text)}», which role does the word «${w}» play?`, criteria: ROLES }; }));
@@ -2530,6 +2537,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   const factKey = (f) => `${f.key}|${f.pos}|${f.si}`;
   function wantTags(list) { for (const f of list) if (f?.untagged) tagWanted.add(factKey(f)); }
   function tagBacklog(max = 12) {
+    // 칸 나누기(낱말마다 Jev)는 기억을 칸 줄로 보낼 때만 쓴다. 기본(문장)에서는 화면 장식뿐이라 Jev 토큰의 40% 넘게 먹어서 안 한다
+    if (settings.memForm !== 'slots') return [];
     const out = [];
     const byKey = new Map(facts.map(f => [factKey(f), f]));
     for (const k of tagWanted) { const f = byKey.get(k); if (f?.untagged) out.push(f); else tagWanted.delete(k); if (out.length >= max) return out; }
@@ -3393,7 +3402,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.', '말한 사람 꼬리표: 대사 이름표(세아: "…")가 있으면 따옴표가 닫힐 때까지 그 사람 말로 봐서, 기억 문장의 "누가" 칸과 기억에서 온 약속 · 비밀 주인에 써요. "도윤아," · "미로한테는"처럼 부르거나 받는 이름은 주인으로 안 봐요. 이미 저장된 기억에도 바로 적용돼요.', '기억 블록의 약속 · 비밀 줄은 칸 줄 대신 원래 문장으로 보내요 (기억 형식이 칸일 때만 칸 줄).']],
+    ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.', '말한 사람 꼬리표: 대사 이름표(세아: "…")가 있으면 따옴표가 닫힐 때까지 그 사람 말로 봐서, 기억 문장의 "누가" 칸과 기억에서 온 약속 · 비밀 주인에 써요. "도윤아," · "미로한테는"처럼 부르거나 받는 이름은 주인으로 안 봐요. 이미 저장된 기억에도 바로 적용돼요.', '기억 블록의 약속 · 비밀 줄은 칸 줄 대신 원래 문장으로 보내요 (기억 형식이 칸일 때만 칸 줄).', 'Jev 토큰 약 40% 절약: 기억 형식이 문장(기본)이면 낱말마다 묻던 칸 나누기를 안 해요. 모델에게 가는 기억은 원래 문장이라 결과는 같고, 기억 탭의 칸 표시만 덜 자세해져요.']],
     ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
     ['1.0.3', '2026-10-20', ['열기 · 닫기가 바로: 열면 가진 기억으로 먼저 그리고, 채팅 다시 읽기는 뒤에서 해요 (위에 움직이는 줄과 "채팅 읽는 중…", 처음 열 때나 다른 채팅이면 본문에 "채팅 불러오는 중…"). 닫기는 바로 닫히고 설정 저장은 닫은 뒤에 마무리해요.', '마디 그림이 열 때마다 모양이 달라지던 것 고침: 같은 마디면 언제나 같은 모양이에요.']],
     ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 움직임 없이 한 번에 그려서 가벼워요 (빽빽한 2000개도 0.2초쯤). 마디 탭은 틀부터 바로 열리고, 지도는 뒤에서 만들어 채워요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
@@ -3611,11 +3620,12 @@ details.more.danger summary{color:var(--tx2)}
       const me = timeline[f.mi]?.role === 'user' && personaCache ? (personList().find(p => p.kind === 'persona')?.name ?? personaCache) : null;
       // "미로한테는 말하지 마"처럼 한테 · 에게 · 께가 붙은 이름도 듣는 쪽
       const listener = (n) => isVocative(f.sent, n) || new RegExp(`${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:한테|에게|께|더러)`, 'u').test(f.sent);
-      const who = speakerOf(f.mi, f.sent) ?? me ?? names.find(n => !listener(n)) ?? '';
+      const said = speakerOf(f.mi, f.sent) ?? me;
+      const who = said ?? names.find(n => !listener(n)) ?? '';
       if (!who && kind !== 'secret') continue;   // 약속은 누구 약속인지 모르면 안 넣는다 (기억 탭에는 그대로). 비밀은 누가 숨기는지 몰라도 넣는다
       const to = names.find(n => n !== who) ?? null;
       const key = factKey(f);
-      out.push({ src: 'mem', key, kind, self: !to && kind !== 'secret', text: unquote(f.sent), who, to: kind === 'secret' ? null : to, mi: f.mi, ck: `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`, status: st[key] ?? 'open' });
+      out.push({ src: 'mem', key, kind, self: !to && kind !== 'secret', text: unquote(f.sent), who, sure: !!said, to: kind === 'secret' ? null : to, mi: f.mi, ck: `${timeline[f.mi]?.key ?? 'x'}:${f.pos}`, status: st[key] ?? 'open' });
     }
     return out;
   }
