@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.3
+//@display-name 🏛️JevArchive 1.0.4
 //@api 3.0
-//@version 1.0.3
+//@version 1.0.4
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true, busySpin: true,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -202,6 +202,7 @@
       tags: s.tags !== false,
       overview: s.overview !== false,
       graph: s.graph !== false,
+      busySpin: s.busySpin !== false,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
@@ -3357,6 +3358,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
     ['1.0.3', '2026-10-20', ['열기 · 닫기가 바로: 열면 가진 기억으로 먼저 그리고, 채팅 다시 읽기는 뒤에서 해요 (위에 움직이는 줄과 "채팅 읽는 중…", 처음 열 때나 다른 채팅이면 본문에 "채팅 불러오는 중…"). 닫기는 바로 닫히고 설정 저장은 닫은 뒤에 마무리해요.', '마디 그림이 열 때마다 모양이 달라지던 것 고침: 같은 마디면 언제나 같은 모양이에요.']],
     ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 움직임 없이 한 번에 그려서 가벼워요 (빽빽한 2000개도 0.2초쯤). 마디 탭은 틀부터 바로 열리고, 지도는 뒤에서 만들어 채워요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
     ['1.0.1', '2026-10-19', ['기억 마디 (뉴런처럼): 저장할 때 Jev가 문장마다 기억할 낱말(물건 · 사건 · 장소 …)을 골라 인물과 함께 마디로 잇고, 보낼 때 장면에 맞는 마디를 켜서 연결된 기억을 같이 꺼내요. 메시지에 글자로 나온 마디는 바로 켜지고, 서술에 너무 자주 나오는 낱말은 배경으로 보고 안 켜요.', '처음 보는 일상 시험(질문 없이 채팅만 28턴, 블라인드 채점): 필요한 기억 19.5 → 26.5/28, 해로운 기억 1 → 0. 기존 시험 38/38 · 54/55 그대로.', '고침: 긴 세션에서 가끔 검색어 하나가 빈 값이 되어 그 턴 회상이 실패하던 문제, 이모지가 반으로 잘려 Jev가 400 오류를 내던 문제.', '"지금까지 만난 사람 다 떠올려 보자" · "한 약속들 정리해 볼까" 같은 모으기 질문이면, 만난 사람 · 관계 · 약속 · 비밀 표를 통째로 짧게 넣어요. 질문 판단은 보낼 때 하는 Jev 호출에 같이 얹어서 호출 수는 그대로예요. (설정 › 이야기에서 끌 수 있어요)', '내 메시지와 뜻이 가장 가까운 문장이 든 메시지 2개는 꼭 후보에 넣어요. 직전 긴 답장 쪽 검색에 밀려 "카이다!" → "카이는 물 타입 수집가" 같은 기억을 놓치던 걸 막아요.', '예전 값이 들어가면, 같은 드문 낱말을 쓰는 나중 문장도 같이 넣어요 (배지 두 개 → 세 번째 배지). 흔한 낱말로는 안 끌려와요.', '긴 답장 시험을 38문제로 늘림 (안 닮은 기억 · 바뀐 값 · 모으기 · 두 단계 · 틀린 전제): 35 → 38/38, 기존 시험 54/55 그대로, 넣는 양 427 → 433토큰.']],
@@ -4424,6 +4426,7 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
+        <div class="field inline"><div><label>작업 중 동그라미</label><div class="help">뒤에서 일하는 동안 채팅 화면 오른쪽 위에 도는 동그라미를 띄워요. <b style="color:#ef4444">빨강</b> 기억 저장 · <b style="color:#a855f7">보라</b> 이야기 정리 · <b style="color:#22c55e">초록</b> 마디 채우기. 누르면 이 화면이 열려요.</div></div>${sw('busySpin', d.busySpin)}</div>
         <div class="field"><label>Jev 가격 (100만 토큰당 달러)</label><div class="help">"지금" 탭의 예상 비용 계산에만 써요.</div><div class="row" style="gap:6px;margin-top:8px"><span class="dim">$</span><input class="inp" type="number" inputmode="decimal" step="any" min="0" data-field="jevPrice" value="${escapeHtml(d.jevPrice)}" style="max-width:110px"><button class="btn sm g" data-act="usage-reset">사용량 초기화</button></div></div>
         <div class="field inline"><div><label>JevArchive 사용</label><div class="help">끄면 요청을 건드리지 않아요.</div></div>${sw('enabled', d.enabled)}</div>
         <div class="row" style="margin-top:8px"><button class="btn g" data-act="go" data-view="news">업데이트 내역</button><button class="btn g" data-act="onboard">시작 안내 다시 보기</button><button class="btn g" data-act="settings-reset">기본값으로</button></div>
@@ -5126,6 +5129,46 @@ details.more.danger summary{color:var(--tx2)}
     } catch (error) { console.error(LOG, '바로가기 버튼 등록 실패', error); }
   }
 
+  // ── 작업 중 동그라미: 리스 하이파 진행 표시처럼 오른쪽 위 (플러그인 API로는 그 표시를 못 켜서, 떠 있는 버튼으로 같은 자리에)
+  //  일마다 색: 저장 빨강 · 이야기 정리 보라 · 마디 초록. 여럿이면 고리를 나눠 칠한다. 짧은 일은 안 띄운다 (깜빡임)
+  //  아이콘 HTML은 style · class가 지워져서, 스스로 도는 SVG(SMIL)를 그림(data:)으로 넣는다
+  const BUSY = { save: ['#ef4444', '기억 저장'], story: ['#a855f7', '이야기 정리'], node: ['#22c55e', '마디 채우기'] };
+  const busyN = { save: 0, story: 0, node: 0 };
+  let busyShown = '', busyTimer = null, busyChain = Promise.resolve();
+  const busyKinds = () => Object.keys(BUSY).filter(k => busyN[k] > 0);
+  function busyIcon(kinds) {
+    const C = 2 * Math.PI * 9, seg = C / kinds.length, len = seg * (kinds.length > 1 ? 0.7 : 0.3);
+    const arcs = kinds.map((k, i) => `<circle cx='12' cy='12' r='9' fill='none' stroke='${BUSY[k][0]}' stroke-width='3' stroke-linecap='round' stroke-dasharray='${len.toFixed(2)} ${(C - len).toFixed(2)}' stroke-dashoffset='${(-seg * i).toFixed(2)}'/>`).join('');
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='12' fill='#111827'/><circle cx='12' cy='12' r='9' fill='none' stroke='#ffffff' stroke-opacity='0.14' stroke-width='3'/><g>${arcs}<animateTransform attributeName='transform' type='rotate' from='0 12 12' to='360 12 12' dur='0.9s' repeatCount='indefinite'/></g></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+  function syncBusy() {
+    clearTimeout(busyTimer);
+    const want = settings.busySpin !== false ? busyKinds().join(',') : '';
+    if (want === busyShown) return;
+    busyTimer = setTimeout(() => {
+      busyChain = busyChain.then(async () => {
+        const kinds = settings.busySpin !== false ? busyKinds() : [];
+        const now = kinds.join(',');
+        if (now === busyShown || !R.registerButton) return;
+        try {
+          // 예전 리스는 같은 id로 다시 등록하면 버튼이 하나 더 생겨서, 지우고 다시 단다
+          if (busyShown && R.unregisterUIPart) await R.unregisterUIPart('jevarchive-busy');
+          busyShown = '';
+          if (now) {
+            await R.registerButton({ name: `Jev Archive · ${kinds.map(k => BUSY[k][1]).join(' · ')} 중`, icon: busyIcon(kinds), iconType: 'img', location: 'action', id: 'jevarchive-busy' }, async () => { await openPanel('now'); });
+            busyShown = now;
+          }
+        } catch (error) { console.error(LOG, '작업 중 동그라미', error); }
+      });
+    }, want ? 600 : 400);
+  }
+  const busyWrap = (kind, fn) => async function (...args) { busyN[kind]++; syncBusy(); try { return await fn.apply(this, args); } finally { busyN[kind]--; syncBusy(); } };
+  indexMessages = busyWrap('save', indexMessages);
+  factMessages = busyWrap('save', factMessages);
+  analyzeMessages = busyWrap('story', analyzeMessages);
+  fillNodes = busyWrap('node', fillNodes);
+
   // ── 시작 ──
   await loadSettings();
   await loadUsage();
@@ -5159,7 +5202,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
