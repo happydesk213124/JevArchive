@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.4
+//@display-name 🏛️JevArchive 1.0.5
 //@api 3.0
-//@version 1.0.4
+//@version 1.0.5
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1338,6 +1338,9 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
 
   // ── 약속 ──
   const PROMISE_CUE = /약속|하기로|할게|해줄게|갈게|올게|하자|가자|만나자|꼭|반드시|맹세|다짐|계획|목표|다음에|내일|언젠가|기다릴게|돌아올|promise|swear|will\s|plan/u;
+  // "-ㄹ게" 끝(살게 · 빌려줄게 · 끝내 놓을게): 받침이 ㄹ인 글자 + 게 + 끝
+  const L_GE = /([가-힣])게(?=[.!?~…"”'’\s,]|$)/gu;
+  const promiseCue = (t) => { if (PROMISE_CUE.test(t)) return true; for (const m of String(t).matchAll(L_GE)) if ((m[1].charCodeAt(0) - 0xac00) % 28 === 8) return true; return false; };
   // 비밀: threads에 kind: 'secret'으로 같이 둔다. who가 to(없으면 모두)에게 숨기는 것. 드러나면 status 'done'
   const SECRET_CUE = /비밀|숨기|숨겨|숨긴|감추|감춰|모르게|몰래|말하지\s*마|말하지\s*않|말\s*못|들키|들킬|정체|사실은|아무도\s*모르|아무한테도|secret|hiding|hidden/u;
   const isSecret = (t) => t.kind === 'secret';
@@ -1468,6 +1471,10 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     }
     // 등장 횟수 · 함께 나온 짝 (무료)
     const pairJobs = [], threadJobs = [], cardJobs = [], secretJobs = [];
+    const peopleOfMsg = new Map();
+    const withPrev = (sents, k) => { const x = sents[k]; if (x == null) return null; return k > 0 && unquote(x).replace(/[^\p{L}\p{N}]/gu, '').length < 10 ? `${sents[k - 1]} ${x}` : x; };
+    const selfAuthor = (c) => (timeline[c.mi]?.role === 'user' && personaCache && story.people[personaCache] && !speakersIn(timeline[c.mi].text).length ? personaCache : '');
+    const msgPeople = (mi) => { if (mi < 0 || !timeline[mi]) return []; if (!peopleOfMsg.has(mi)) peopleOfMsg.set(mi, [...new Set([...speakersIn(timeline[mi].text), ...peopleIn(timeline[mi].text)])]); return peopleOfMsg.get(mi); };
     for (const c of runChunks) {
       const names = peopleIn(c.text);
       for (const n of names) { const p = story.people[n]; p.count++; p.first ??= c.mi; p.last = Math.max(p.last ?? 0, c.mi); }
@@ -1477,10 +1484,11 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
         pr.last = Math.max(pr.last ?? 0, c.mi);
         if (pairJobs.length < 8) pairJobs.push({ pr, c, askType: !pr.lock && (!pr.type ? pr.co === 2 || pr.co % 10 === 0 : pr.co % 15 === 0), askWho: !pr.lock && !!relDir(pr.type) && !pr.who });
       }
-      // 약속한 사람 후보에는 글쓴이도 (예: 내가 쓴 "약속할게."는 내 약속)
+      // "누가" 보기: 대사가 잘려 말한 사람 이름이 다른 조각에 있을 수 있어서, 이 조각 → 같은 메시지 → 바로 앞 메시지 2개에 나온 인물.
+      //  글쓴 쪽(사용자 · 봇 카드)은 말한 사람이 아닐 수 있어서(사용자가 엔피씨 대사를 쓰거나, 봇이 여러 인물을 연기) 맨 뒤 보기 하나로만
       const author = timeline[c.mi]?.role === 'user' ? personaCache : characterCache.name;
-      const who = [...new Set([author, ...names].filter(n => n && story.people[n]))];
-      if (who.length && PROMISE_CUE.test(c.text) && threadJobs.length < 12) threadJobs.push({ c, names: who });
+      const who = [...new Set([...names, ...msgPeople(c.mi), ...msgPeople(c.mi - 1), ...msgPeople(c.mi - 2), author].filter(n => n && story.people[n]))].slice(0, 12);
+      if (who.length && promiseCue(c.text) && threadJobs.length < 12) threadJobs.push({ c, names: who });
       if (who.length && SECRET_CUE.test(c.text) && secretJobs.length < 12) secretJobs.push({ c, names: who });
     }
     // 사건 카드: 메시지마다 문장 몇 개 (이름이나 약속 말이 있는 문장 먼저)
@@ -1517,17 +1525,17 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
       j.sents = sents;
       q[`p${i}`] = { type: 'noul', instructions: `Does someone in this passage promise, agree to, or plan a specific thing to do LATER (after this scene), that has not happened yet? Requests to do something right now, past events, and facts do not count. (passage ${pid(j.c)})` };
-      q[`pw${i}`] = { type: 'choice', instructions: 'Who made that promise or has that goal?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
-      q[`pt${i}`] = { type: 'choice', instructions: 'Toward whom?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['none', 'nobody in particular']]) };
-      q[`ps${i}`] = { type: 'choice', instructions: 'Which sentence states that promise or plan for later?', criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
+      q[`pw${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, who made that promise or has that goal? Someone called by name in the line ("지호야, …") is the listener, not the speaker.`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
+      q[`pt${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, toward whom?`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['none', 'nobody in particular']]) };
+      q[`ps${i}`] = { type: 'choice', instructions: `Which sentence of passage ${pid(j.c)} states that promise or plan for later?`, criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
     });
     secretJobs.forEach((j, i) => {
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
       j.sents = sents;
       q[`s${i}`] = { type: 'noul', instructions: `Does this passage show someone deliberately keeping a specific secret from someone else (a hidden fact, identity, past, feeling, or plan)? Private thoughts nobody is hiding do not count, and a secret that is being revealed to that person right now does not count. (passage ${pid(j.c)})` };
-      q[`sw${i}`] = { type: 'choice', instructions: 'Who keeps that secret?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
-      q[`sf${i}`] = { type: 'choice', instructions: 'From whom is it kept hidden?', criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['everyone', 'everyone else'], ['unclear', 'unclear']]) };
-      q[`ss${i}`] = { type: 'choice', instructions: 'Which sentence states what the secret is?', criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
+      q[`sw${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, who keeps that secret? Someone called by name in the line ("지호야, …") is the listener, not the speaker.`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
+      q[`sf${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, from whom is it kept hidden?`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['everyone', 'everyone else'], ['unclear', 'unclear']]) };
+      q[`ss${i}`] = { type: 'choice', instructions: `Which sentence of passage ${pid(j.c)} states what the secret is?`, criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
     });
     revealJobs.forEach((t, i) => { q[`v${i}`] = { type: 'noul', instructions: `In these new passages, does this secret come out (the person it was hidden from learns it, or it is exposed)? «${t.who} hides from ${t.to ?? 'everyone'}: ${t.text}»` }; });
     closeJobs.forEach((t, i) => { q[`c${i}`] = { type: 'noul', instructions: `In these new passages, is this promise or plan fulfilled, cancelled, or no longer relevant? «${t.who}${t.to ? ` → ${t.to}` : ''}: ${t.text}»` }; });
@@ -1575,9 +1583,9 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           const [ps] = topChoice(a[`ps${i}`]);
           if (ps === 'none') return;
           const k = Number(String(ps ?? 's0').slice(1)) || 0;
-          const text = clip(unquote(j.sents[k] ?? j.c.text), 160);
+          const text = clip(unquote(withPrev(j.sents, k) ?? j.c.text), 160);
           if (story.threads.some(t => t.text === text)) return;
-          const w = who && who !== 'unclear' ? who : (j.names[0] ?? '');
+          const w = who && who !== 'unclear' ? who : selfAuthor(j.c);
           story.threads.push({ id: ++story.seq, text, who: w, to: to && to !== 'none' && to !== w ? to : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
@@ -1597,11 +1605,11 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           if (Number(a[`s${i}`]?.noul ?? 0) < 0.75) return;
           const [ss] = topChoice(a[`ss${i}`]);
           if (ss === 'none') return;
-          const text = clip(unquote(j.sents[Number(String(ss ?? 's0').slice(1)) || 0] ?? j.c.text), 160);
+          const text = clip(unquote(withPrev(j.sents, Number(String(ss ?? 's0').slice(1)) || 0) ?? j.c.text), 160);
           if (story.threads.some(t => t.text === text)) return;
           const [who] = topChoice(a[`sw${i}`]);
           const [from] = topChoice(a[`sf${i}`]);
-          const w = who && who !== 'unclear' ? who : (j.names[0] ?? '');
+          const w = who && who !== 'unclear' ? who : selfAuthor(j.c);
           story.threads.push({ id: ++story.seq, kind: 'secret', text, who: w, to: from && from !== 'unclear' && from !== 'everyone' && from !== w ? from : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         cardJobs.forEach((j, i) => {
@@ -3358,6 +3366,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.']],
     ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
     ['1.0.3', '2026-10-20', ['열기 · 닫기가 바로: 열면 가진 기억으로 먼저 그리고, 채팅 다시 읽기는 뒤에서 해요 (위에 움직이는 줄과 "채팅 읽는 중…", 처음 열 때나 다른 채팅이면 본문에 "채팅 불러오는 중…"). 닫기는 바로 닫히고 설정 저장은 닫은 뒤에 마무리해요.', '마디 그림이 열 때마다 모양이 달라지던 것 고침: 같은 마디면 언제나 같은 모양이에요.']],
     ['1.0.2', '2026-10-20', ['새 탭 "마디": 기억 마디를 거미줄 그림으로 보고(끌기 · 확대), 누르면 이어진 마디와 붙은 원문 기억이 나와요. 목록 · 찾기도 돼요. 보일 마디 수는 10개부터 2000개까지 슬라이더로 정하고, 많아도 움직임 없이 한 번에 그려서 가벼워요 (빽빽한 2000개도 0.2초쯤). 마디 탭은 틀부터 바로 열리고, 지도는 뒤에서 만들어 채워요.', '예전 기억에도 마디: 이전 버전에서 저장된 기억은 보낼 때마다 뒤에서 40개씩 마디를 채워요. 마디 탭이나 "지금 전부 정리"로 한 번에 채울 수도 있어요.', '관계도: 사람이 많으면 자주 나온 14명만 먼저 그리고 "모두 보기"로 펼쳐요. 동그라미 · 이름이 겹치지 않게 밀어 주고, 판 크기를 그림에 맞춰요. 인물을 눌러 "관계도에서 이 사람 중심으로 보기".', '짧은 채팅에서 낱말이 전부 "배경"으로 처리되던 문제 고침 (메시지 6개 이상에 나와야 배경).']],
