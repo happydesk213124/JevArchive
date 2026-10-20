@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.7
+//@display-name 🏛️JevArchive 1.0.8
 //@api 3.0
-//@version 1.0.7
+//@version 1.0.8
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -207,6 +207,8 @@
       keepLevel: Number.isFinite(Number(s.keepLevel)) ? Math.min(2.5, Math.max(0.5, Number(s.keepLevel))) : 1.3,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'max', 'custom'].includes(s.memPreset) ? s.memPreset : null,
+      // 1.0.7의 완전 꼼꼼하게(13000)를 쓰던 사람은 3000으로
+      ...(s.memPreset === 'max' && Number(s.budget) === 13000 ? { budget: 3000 } : {}),
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
       jevParallel: clampNum(s.jevParallel, 2, 1, 10),
       jevPrice: Number.isFinite(Number(s.jevPrice)) && Number(s.jevPrice) >= 0 && s.jevPrice !== '' && s.jevPrice != null ? Number(s.jevPrice) : 0.042,
@@ -250,7 +252,7 @@
     light: { label: '가볍게', desc: '토큰을 아껴요', budget: 400, candidates: 12, neighbor: 0, tailTokens: 80 },
     balanced: { label: '균형', desc: '추천', budget: 600, candidates: 16, neighbor: 1, tailTokens: 120 },
     rich: { label: '꼼꼼하게', desc: '더 많이 기억해요', budget: 1200, candidates: 24, neighbor: 1, tailTokens: 200 },
-    max: { label: '완전 꼼꼼하게', desc: '거의 다 넣어요 (Jev 더 씀)', budget: 13000, candidates: 48, neighbor: 2, tailTokens: 1500, keepLevel: 1.0 },
+    max: { label: '완전 꼼꼼하게', desc: '거의 다 넣어요 (Jev 더 씀)', budget: 3000, candidates: 48, neighbor: 2, tailTokens: 1500, keepLevel: 1.0 },
   };
   const presetOf = (d) => Object.entries(MEMORY_PRESETS).find(([, p]) => ['budget', 'candidates', 'neighbor', 'tailTokens'].every(k => Number(d[k]) === p[k]))?.[0] ?? 'custom';
 
@@ -3441,7 +3443,8 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
-    ['1.0.7', '2026-10-20', ['서술에서도 한 글자 이름(벤 · 솔)을 찾아요. 흔한 한 글자 낱말(손 · 길 · 말 …)은 빼고, 사람처럼 3번 넘게 나올 때만 Jev에게 사람 이름인지 물어요.', '"리안, 사실 나…"처럼 이름을 부르는 말의 그 사람은 비밀 · 약속 주인으로 보지 않아요.', '이름 후보를 정리할 때마다 쌓아서 세요. 한 번에 한두 번씩만 나오는 인물도 모이면 찾아요.', '기억 넣기에 "완전 꼼꼼하게" 추가: 기억 블록 13000토큰까지, 심사 후보 48개, 넣는 기준 1.0으로 거의 다 넣어요. Jev를 30~50% 더 써요.', '놓친 기억 줍기는 Voyage 임베딩일 때만 켜지고, 아니면 설정에 이유가 보여요.', '이미 아는 인물 이름의 앞부분(루시아 → 루시)은 새 인물로 안 봐요.']],
+    ['1.0.8', '2026-10-20', ['"완전 꼼꼼하게"의 기억 예산을 13000 → 3000토큰으로 줄였어요. 메인 모델 입력이 너무 커지지 않게. 이미 골라 둔 사람도 자동으로 바뀌어요.']],
+    ['1.0.7', '2026-10-20', ['서술에서도 한 글자 이름(벤 · 솔)을 찾아요. 흔한 한 글자 낱말(손 · 길 · 말 …)은 빼고, 사람처럼 3번 넘게 나올 때만 Jev에게 사람 이름인지 물어요.', '"리안, 사실 나…"처럼 이름을 부르는 말의 그 사람은 비밀 · 약속 주인으로 보지 않아요.', '이름 후보를 정리할 때마다 쌓아서 세요. 한 번에 한두 번씩만 나오는 인물도 모이면 찾아요.', '기억 넣기에 "완전 꼼꼼하게" 추가: 기억 블록 3000토큰까지 (1.0.8부터), 심사 후보 48개, 넣는 기준 1.0으로 거의 다 넣어요. Jev를 30~50% 더 써요.', '놓친 기억 줍기는 Voyage 임베딩일 때만 켜지고, 아니면 설정에 이유가 보여요.', '이미 아는 인물 이름의 앞부분(루시아 → 루시)은 새 인물로 안 봐요.']],
     ['1.0.6', '2026-10-20', ['놓친 기억 줍기: Jev가 필요 없다고 자른 기억 중 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요 (예: "다온 선배가 고양이 알레르기 있었지?" → "예린은 고양이 털 알레르기"). 임베딩이 Voyage일 때만, 설정에서 끌 수 있어요.', '기억을 넣는 기준을 1.5 → 1.3으로 조금 낮췄어요. 아슬아슬하게 잘리던 기억(예: 쌀국수 ↔ 고수 못 먹음)이 들어가요.', '"예린이한테는 말하지 마"의 예린은 숨기는 사람이 아니라 모르는 쪽으로 봐요. 비밀 장면에서 나온 기억 줄에는 (secret — 예린 must not learn it) 표시를 붙여 메인 모델이 함부로 말하지 않게 해요.']],
     ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.', '말한 사람 꼬리표: 대사 이름표(세아: "…")가 있으면 따옴표가 닫힐 때까지 그 사람 말로 봐서, 기억 문장의 "누가" 칸과 기억에서 온 약속 · 비밀 주인에 써요. "도윤아," · "미로한테는"처럼 부르거나 받는 이름은 주인으로 안 봐요. 이미 저장된 기억에도 바로 적용돼요.', '기억 블록의 약속 · 비밀 줄은 칸 줄 대신 원래 문장으로 보내요 (기억 형식이 칸일 때만 칸 줄).', 'Jev 토큰 약 40% 절약: 기억 형식이 문장(기본)이면 낱말마다 묻던 칸 나누기를 안 해요. 모델에게 가는 기억은 원래 문장이라 결과는 같고, 기억 탭의 칸 표시만 덜 자세해져요.']],
     ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
