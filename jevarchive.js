@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.5
+//@display-name 🏛️JevArchive 1.0.6
 //@api 3.0
-//@version 1.0.5
+//@version 1.0.6
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true, busySpin: true,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true, busySpin: true, rescue: true, keepLevel: 1.3,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -203,6 +203,8 @@
       overview: s.overview !== false,
       graph: s.graph !== false,
       busySpin: s.busySpin !== false,
+      rescue: s.rescue !== false,
+      keepLevel: Number.isFinite(Number(s.keepLevel)) ? Math.min(2.5, Math.max(0.5, Number(s.keepLevel))) : 1.3,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'custom'].includes(s.memPreset) ? s.memPreset : null,
       memCustom: s.memCustom && typeof s.memCustom === 'object' ? { budget: clampNum(s.memCustom.budget, 600, 0, 20000), candidates: clampNum(s.memCustom.candidates, 16, 4, 80), neighbor: clampNum(s.memCustom.neighbor, 1, 0, 3), tailTokens: clampNum(s.memCustom.tailTokens, 120, 0, 4000) } : null,
@@ -763,12 +765,13 @@
     return Number.isFinite(sc) ? sc : 0;
   }
 
+let lastRescue = null;
   // 심사는 번호로: 같은 설명을 후보마다 반복하지 않게, 설명과 후보 목록은 state에 한 번만 (요청 크기가 크게 준다)
   const RANK_SHORT = ['unrelated', 'background', 'useful', 'answers it'];
   async function judge(cands, state, askNeed, extra = null) {
     const q = { ...(extra ?? {}) };
     cands.forEach((c, i) => { q[`r${c.id}`] = { type: 'score', instructions: `C${i}`, criteria: RANK_SHORT }; });
-    if (cands.length) state = `${state}\n\n[EARLIER RECORDS] For each Cn question, score how useful that record is for replying to the latest message: 0 unrelated, 1 background only, 2 useful context, 3 answers or explains it.\n${cands.map((c, i) => `C${i}: ${c.text}`).join('\n')}`;
+    if (cands.length) state = `${state}\n\n[EARLIER RECORDS] For each Cn question, score how useful that record is for replying to the latest message: 0 unrelated, 1 background only, 2 useful context, 3 answers or explains it.${(globalThis.__JA_EXP ?? {}).judgePlus ? ' Also count records the reply must respect even if the message does not mention them (likes, dislikes, allergies, fears, plans of the people involved), and records that correct a wrong assumption in the latest message (for example it was someone else).' : ''}\n${cands.map((c, i) => `C${i}: ${c.text}`).join('\n')}`;
     if (askNeed && cands.length) q.need = { type: 'choice', instructions: 'Which earlier record, if any, is still missing to answer the latest message?', criteria: SEARCH_NEEDS };
     if (!Object.keys(q).length) return { levels: new Map(), need: 'none', answers: {} };
     const answers = await callJev(state, q);
@@ -1026,12 +1029,25 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           for (const [id, lv] of r2.levels) levels.set(id, lv);
         }
       }
+      // 구조망 (시험 스위치): Jev가 자른 후보 중 리랭커가 마지막 메시지와 아주 가깝다고 본 것을 살린다
+      const RS = globalThis.__JA_EXP ?? {};
+      if ((RS.rescue ?? settings.rescue !== false) && latest && /voyageai\.com/.test(embedConfig(settings).endpoint ?? '')) {
+        const cut = allC.filter(c => (levels.get(c.id) ?? 0) < (RS.keep ?? settings.keepLevel ?? 1.3)).slice(0, 40);
+        if (cut.length) {
+          try {
+            const rs = await timed(tr, '구조망 리랭크', () => voyageRerank(latest, cut.map(c => c.text)), () => `후보 ${cut.length}개`);
+            const saved = cut.map((c, i) => [c, rs[i]]).filter(([, s]) => s >= (RS.rescueMin ?? 0.6)).sort((a, b) => b[1] - a[1]).slice(0, RS.rescueN ?? 2);
+            for (const [c, s] of saved) levels.set(c.id, KEEP_LEVEL + 0.01);
+            (lastRescue = saved.map(([c, s]) => ({ id: c.id, rr: +s.toFixed(3), text: clip(c.text, 60) })));
+          } catch (error) { setError('구조망', error); }
+        }
+      }
     } catch (error) {
       jevOk = false;
       setError('Jev 채점', error);
       first.slice(0, 6).forEach((f, i) => levels.set(f.id, 2 - i * 0.01));
     }
-    const scored = [...levels].map(([id, lv]) => ({ f: facts[id], lv })).filter(x => x.f && x.lv >= KEEP_LEVEL).sort((a, b) => b.lv - a.lv || b.f.id - a.f.id);
+    const scored = [...levels].map(([id, lv]) => ({ f: facts[id], lv })).filter(x => x.f && x.lv >= ((globalThis.__JA_EXP ?? {}).keep ?? settings.keepLevel ?? 1.3)).sort((a, b) => b.lv - a.lv || b.f.id - a.f.id);
     const EXP = globalThis.__JA_EXP ?? {};
     // 새 값 따라오기: 넣기로 한 문장과 드문 낱말(이 채팅에서 4문장 이하)을 같이 쓰는 "나중" 문장은 문턱(1.5) 아래여도 같이 넣는다.
     //  예전 값만 들어가고 바뀐 값이 빠지는 걸 막는다 (배지 두 개 → 세 번째 배지). 흔한 낱말(광장 · 길가)로는 안 끌려온다
@@ -1097,7 +1113,10 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       .sort((a, b) => a.mi - b.mi || a.pos - b.pos || a.si - b.si);
     const asSent = cfg.memForm === 'sentence';
     wantTags(picked.filter(p => p.t === 'f').map(p => p.u));
-    const lines = picked.map(p => (p.t === 'f' ? (asSent ? `#${p.mi + 1} ${p.u.sent}` : `#${p.mi + 1} ${p.u.line}`) : `<#${p.mi + 1} ${timeline[p.mi]?.role === 'user' ? 'user' : 'char'}> ${p.u.text}`));
+    const secretMi = new Map();
+    if (settings.story) for (const t of [...openSecrets(), ...memThreads().filter(t => isSecret(t) && t.status === 'open')]) if (!secretMi.has(t.mi)) secretMi.set(t.mi, t.to ?? recipientIn(t.text));
+    const sTag = (mi) => (secretMi.has(mi) ? `(secret${secretMi.get(mi) ? ` — ${secretMi.get(mi)} must not learn it` : ''}) ` : '');
+    const lines = picked.map(p => (p.t === 'f' ? (asSent ? `#${p.mi + 1} ${sTag(p.mi)}${p.u.sent}` : `#${p.mi + 1} ${sTag(p.mi)}${p.u.line}`) : `<#${p.mi + 1} ${timeline[p.mi]?.role === 'user' ? 'user' : 'char'}> ${p.u.text}`));
     const slotted = (!asSent && picked.some(p => p.t === 'f')) || head.some(l => /^(Open promise|Secret):/.test(l) && l.includes('/'));
     const note = cfg.note ? `${cfg.note}\n` : '';
     const body = [slotted ? MEM_LEGEND : '', headText, lines.length ? `${headText ? 'Memories:\n' : ''}${lines.join('\n')}` : ''].filter(Boolean).join('\n');
@@ -1532,7 +1551,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
       j.sents = sents;
       q[`p${i}`] = { type: 'noul', instructions: `Does someone in this passage promise, agree to, or plan a specific thing to do LATER (after this scene), that has not happened yet? Requests to do something right now, past events, and facts do not count. (passage ${pid(j.c)})` };
-      q[`pw${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, who made that promise or has that goal? Someone called by name in the line ("지호야, …") is the listener, not the speaker.`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
+      q[`pw${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, who made that promise or has that goal? Someone called by name in the line ("지호야, …") is the listener, not the speaker, and someone the line is said to or kept from ("예린이한테는 말하지 마", "예린에게") is not the one who promises or keeps the secret.`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
       q[`pt${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, toward whom?`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['none', 'nobody in particular']]) };
       q[`ps${i}`] = { type: 'choice', instructions: `Which sentence of passage ${pid(j.c)} states that promise or plan for later?`, criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
     });
@@ -1540,7 +1559,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       const sents = sentencesOf(stripStatus(j.c.text)).slice(0, 6);
       j.sents = sents;
       q[`s${i}`] = { type: 'noul', instructions: `Does this passage show someone deliberately keeping a specific secret from someone else (a hidden fact, identity, past, feeling, or plan)? Private thoughts nobody is hiding do not count, and a secret that is being revealed to that person right now does not count. (passage ${pid(j.c)})` };
-      q[`sw${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, who keeps that secret? Someone called by name in the line ("지호야, …") is the listener, not the speaker.`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
+      q[`sw${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, who keeps that secret? Someone called by name in the line ("지호야, …") is the listener, not the speaker, and someone the line is said to or kept from ("예린이한테는 말하지 마", "예린에게") is not the one who promises or keeps the secret.`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['unclear', 'unclear']]) };
       q[`sf${i}`] = { type: 'choice', instructions: `In passage ${pid(j.c)}, from whom is it kept hidden?`, criteria: Object.fromEntries([...j.names.map(n => [n, n]), ['everyone', 'everyone else'], ['unclear', 'unclear']]) };
       q[`ss${i}`] = { type: 'choice', instructions: `Which sentence of passage ${pid(j.c)} states what the secret is?`, criteria: Object.fromEntries([...sents.map((s, k) => [`s${k}`, s]), ['none', 'none of these']]) };
     });
@@ -1592,7 +1611,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           const k = Number(String(ps ?? 's0').slice(1)) || 0;
           const text = clip(unquote(withPrev(j.sents, k) ?? j.c.text), 160);
           if (story.threads.some(t => t.text === text)) return;
-          const w = who && who !== 'unclear' ? who : selfAuthor(j.c);
+          let w = who && who !== 'unclear' ? who : selfAuthor(j.c);
+          if (w && isRecipient(j.c.text, w) && !speakersIn(j.c.text).includes(w)) w = '';
           story.threads.push({ id: ++story.seq, text, who: w, to: to && to !== 'none' && to !== w ? to : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
@@ -1616,7 +1636,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           if (story.threads.some(t => t.text === text)) return;
           const [who] = topChoice(a[`sw${i}`]);
           const [from] = topChoice(a[`sf${i}`]);
-          const w = who && who !== 'unclear' ? who : selfAuthor(j.c);
+          let w = who && who !== 'unclear' ? who : selfAuthor(j.c);
+          if (w && isRecipient(j.c.text, w) && !speakersIn(j.c.text).includes(w)) w = '';
           story.threads.push({ id: ++story.seq, kind: 'secret', text, who: w, to: from && from !== 'unclear' && from !== 'everyone' && from !== w ? from : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
         cardJobs.forEach((j, i) => {
@@ -1795,6 +1816,11 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     return out;
   }
   const speakerOf = (mi, sent) => speakerMap(mi).get(unquote(sent)) ?? null;
+  /** "예린이한테는" · "미로에게" · "선생님께"처럼 말을 받는 쪽 (받침 뒤 "이"도) */
+  const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const isRecipient = (text, name) => new RegExp(`${escRe(name)}이?(?:한테|에게|께|더러)`, 'u').test(String(text));
+  /** 비밀 글에서 "모르는 쪽" 이름 하나 (한테 · 에게가 붙은 아는 인물) */
+  const recipientIn = (text) => personList().map(p => p.name).find(n => n.length >= 2 && isRecipient(text, n)) ?? null;
   /** "도윤아, …" · "도윤, …" · "도윤 씨!" 처럼 이름을 부르는 말이면 그 사람은 듣는 쪽 */
   const isVocative = (sent, name) => { const e = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); return new RegExp(`${e}(?:아|야|씨|님)?\\s*[,，!！~]|${e}(?:아|야)(?=[\\s"”]|$)`, 'u').test(sent); };
 
@@ -3402,6 +3428,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.6', '2026-10-20', ['놓친 기억 줍기: Jev가 필요 없다고 자른 기억 중 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요 (예: "다온 선배가 고양이 알레르기 있었지?" → "예린은 고양이 털 알레르기"). 임베딩이 Voyage일 때만, 설정에서 끌 수 있어요.', '기억을 넣는 기준을 1.5 → 1.3으로 조금 낮췄어요. 아슬아슬하게 잘리던 기억(예: 쌀국수 ↔ 고수 못 먹음)이 들어가요.', '"예린이한테는 말하지 마"의 예린은 숨기는 사람이 아니라 모르는 쪽으로 봐요. 비밀 장면에서 나온 기억 줄에는 (secret — 예린 must not learn it) 표시를 붙여 메인 모델이 함부로 말하지 않게 해요.']],
     ['1.0.5', '2026-10-20', ['약속 · 비밀 주인을 더 정확하게: 대사가 길어 잘리거나 이름표 없이 써도, 그 메시지와 바로 앞 메시지에 나온 인물 중에서 골라요. 이름을 부른 사람("지호야, …")은 듣는 사람으로 봐요. 모르면 아무 이름이나 붙이지 않고 비워 둬요.', '"살게 · 빌려줄게"처럼 -ㄹ게로 끝나는 약속도 찾아요. 약속 문장이 "약속할게."처럼 짧으면 앞 문장을 같이 저장해요.', '말한 사람 꼬리표: 대사 이름표(세아: "…")가 있으면 따옴표가 닫힐 때까지 그 사람 말로 봐서, 기억 문장의 "누가" 칸과 기억에서 온 약속 · 비밀 주인에 써요. "도윤아," · "미로한테는"처럼 부르거나 받는 이름은 주인으로 안 봐요. 이미 저장된 기억에도 바로 적용돼요.', '기억 블록의 약속 · 비밀 줄은 칸 줄 대신 원래 문장으로 보내요 (기억 형식이 칸일 때만 칸 줄).', 'Jev 토큰 약 40% 절약: 기억 형식이 문장(기본)이면 낱말마다 묻던 칸 나누기를 안 해요. 모델에게 가는 기억은 원래 문장이라 결과는 같고, 기억 탭의 칸 표시만 덜 자세해져요.']],
     ['1.0.4', '2026-10-20', ['작업 중 동그라미: 뒤에서 일하는 동안 채팅 화면 오른쪽 위(리스 하이파 진행 표시 자리)에 도는 동그라미가 떠요. 빨강 기억 저장 · 보라 이야기 정리 · 초록 마디 채우기, 같이 하면 고리가 나눠져요. 누르면 기억 창이 열리고, 설정 > 작업 중 동그라미에서 끌 수 있어요.']],
     ['1.0.3', '2026-10-20', ['열기 · 닫기가 바로: 열면 가진 기억으로 먼저 그리고, 채팅 다시 읽기는 뒤에서 해요 (위에 움직이는 줄과 "채팅 읽는 중…", 처음 열 때나 다른 채팅이면 본문에 "채팅 불러오는 중…"). 닫기는 바로 닫히고 설정 저장은 닫은 뒤에 마무리해요.', '마디 그림이 열 때마다 모양이 달라지던 것 고침: 같은 마디면 언제나 같은 모양이에요.']],
@@ -3619,7 +3646,7 @@ details.more.danger summary{color:var(--tx2)}
       const names = peopleIn(f.sent).filter(n => !isTitleName(n));
       const me = timeline[f.mi]?.role === 'user' && personaCache ? (personList().find(p => p.kind === 'persona')?.name ?? personaCache) : null;
       // "미로한테는 말하지 마"처럼 한테 · 에게 · 께가 붙은 이름도 듣는 쪽
-      const listener = (n) => isVocative(f.sent, n) || new RegExp(`${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:한테|에게|께|더러)`, 'u').test(f.sent);
+      const listener = (n) => isVocative(f.sent, n) || isRecipient(f.sent, n);
       const said = speakerOf(f.mi, f.sent) ?? me;
       const who = said ?? names.find(n => !listener(n)) ?? '';
       if (!who && kind !== 'secret') continue;   // 약속은 누구 약속인지 모르면 안 넣는다 (기억 탭에는 그대로). 비밀은 누가 숨기는지 몰라도 넣는다
@@ -4475,6 +4502,7 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
+        <div class="field inline"><div><label>놓친 기억 줍기</label><div class="help">Jev가 "필요 없음"으로 자른 기억 중, 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요. 임베딩이 Voyage일 때만 돼요 (리랭커 비용은 아주 작아요).</div></div>${sw('rescue', d.rescue)}</div>
         <div class="field inline"><div><label>작업 중 동그라미</label><div class="help">뒤에서 일하는 동안 채팅 화면 오른쪽 위에 도는 동그라미를 띄워요. <b style="color:#ef4444">빨강</b> 기억 저장 · <b style="color:#a855f7">보라</b> 이야기 정리 · <b style="color:#22c55e">초록</b> 마디 채우기. 누르면 이 화면이 열려요.</div></div>${sw('busySpin', d.busySpin)}</div>
         <div class="field"><label>Jev 가격 (100만 토큰당 달러)</label><div class="help">"지금" 탭의 예상 비용 계산에만 써요.</div><div class="row" style="gap:6px;margin-top:8px"><span class="dim">$</span><input class="inp" type="number" inputmode="decimal" step="any" min="0" data-field="jevPrice" value="${escapeHtml(d.jevPrice)}" style="max-width:110px"><button class="btn sm g" data-act="usage-reset">사용량 초기화</button></div></div>
         <div class="field inline"><div><label>JevArchive 사용</label><div class="help">끄면 요청을 건드리지 않아요.</div></div>${sw('enabled', d.enabled)}</div>
@@ -5251,7 +5279,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
