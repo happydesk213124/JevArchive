@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.10
+//@display-name 🏛️JevArchive 1.0.11
 //@api 3.0
-//@version 1.0.10
+//@version 1.0.11
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -3486,6 +3486,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.11', '2026-10-21', ['설정 › 메인 모델에게 하는 안내 옆에 "기본값으로" 버튼이 생겼어요. 고친 안내를 한 번에 처음 문장으로 되돌려요.']],
     ['1.0.10', '2026-10-21', ['메인 모델에게 관계 · 약속 · 비밀 · 태그 줄은 자동 요약이라 틀릴 수 있다고 한 줄 알려 줘요. 원문 기억 줄이나 지금 채팅과 다르면 그쪽을 믿게. 원문 기억 줄에는 안 붙여요.']],
     ['1.0.9', '2026-10-21', ['미리 보기: "이번 답장에 넣은 기억" 칸에 보낼 말을 적고 Enter. 채팅 끝 메시지 몇 개와 같이 어떤 기억이 들어갈지 초록 (미리 보기)로 보여 줘요. 모델에는 안 보내고, 실제로 넣은 기록도 안 바뀌어요.', '대사 이름표: "미나: …" 대사가 여러 문장이어도 둘째 문장부터 이름이 붙어요.', '메인 모델에게 지금 메시지 번호를 알려 주고, 방금 흐름(바로 앞 메시지들)은 예전 기억과 따로 묶어 넣어요.', '서술 뒤 같은 줄에 "이름:"이 오면 서술까지 이름으로 잡던 것 고침.', '기억 마디에서 Jev 대신 임베딩 · 규칙을 써요. 기억할 낱말은 규칙으로, 켤 마디는 장면과 뜻이 가까운 순서로 골라요. 시험해 보니 기억은 같거나 조금 더 잘 꺼내고, Jev 호출은 약 40% 줄고 더 빨라졌어요.']],
     ['1.0.8', '2026-10-20', ['"완전 꼼꼼하게"의 기억 예산을 13000 → 3000토큰으로 줄였어요. 메인 모델 입력이 너무 커지지 않게. 이미 골라 둔 사람도 자동으로 바뀌어요.']],
@@ -4575,7 +4576,7 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>넣는 방식</h2></div>
         <div class="field"><label>넣는 위치</label><select class="sel" data-field="injectMode"><option value="last_user"${d.injectMode === 'last_user' ? ' selected' : ''}>최신 입력 바로 앞</option><option value="system"${d.injectMode === 'system' ? ' selected' : ''}>시스템 메시지로</option></select><div class="help">프롬프트에 <b>[jevarchive]</b>를 써 두면 그 자리에 들어가요.</div></div>
-        <div class="field"><label>메인 모델에게 하는 안내</label><textarea class="inp" data-field="note" rows="2">${escapeHtml(d.note)}</textarea><div class="help">기억 블록 맨 위 한 줄. 비우면 안 넣어요.</div></div>
+        <div class="field"><div class="row"><label>메인 모델에게 하는 안내</label><span class="sp"></span><button class="btn sm g" data-act="note-reset">기본값으로</button></div><textarea class="inp" data-field="note" rows="2">${escapeHtml(d.note)}</textarea><div class="help">기억 블록 맨 위 한 줄. 비우면 안 넣어요.</div></div>
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
@@ -5073,6 +5074,8 @@ details.more.danger summary{color:var(--tx2)}
         return;
       }
       case 'preview-off': { ui.pv.res = null; render(); return; }
+      // 안내 기본값으로: 칸에 기본 문장을 넣고 input을 보내서 다른 칸처럼 저장되게
+      case 'note-reset': { const el = document.querySelector('[data-field="note"]'); if (el) { el.value = DEFAULT_NOTE; el.dispatchEvent(new Event('input', { bubbles: true })); } toast('기본 안내로 되돌렸어요.'); return; }
       case 'preview': {
         if (ui.pv.busy) return;
         ui.pv.q = document.getElementById('pvq')?.value ?? ui.pv.q;
