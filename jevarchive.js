@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.11
+//@display-name 🏛️JevArchive 1.0.12
 //@api 3.0
-//@version 1.0.11
+//@version 1.0.12
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -559,12 +559,26 @@
     return String(text ?? '').replace(/\{\{\s*char\s*\}\}|<char>/gi, c).replace(/\{\{\s*user\s*\}\}|<user>/gi, u);
   }
 
+  /** 첫 인사말을 CBS로 풀어 둔 것 (원문이 같을 때만 씀) */
+  let greetOverride = null;
+  async function prepGreet(chat) {
+    const fm = Number(chat?.fmIndex ?? -1);
+    const raw = String((fm >= 0 && characterCache.alternateGreetings?.[fm] != null ? characterCache.alternateGreetings[fm] : characterCache.firstMessage) ?? '');
+    greetOverride = null;
+    if (!raw.includes('{{')) return;
+    let text = null;
+    try { if (typeof R.parseRisuChat === 'function') text = await R.parseRisuChat(raw, { messageIndex: -1, role: 'char', cbsConditions: { firstmsg: true } }); } catch { }
+    if (typeof text !== 'string') text = /\{\{\s*#(?:if|when|each|pure|if_pure)/i.test(raw) ? '' : raw;
+    greetOverride = { raw, text };
+  }
+
   /** 채팅 원본(첫 인사말 + 메시지 전부)을 timeline 형태로 */
   function rawTimeline(chat) {
     if (!chat || !Array.isArray(chat.message)) return [];
     const out = [];
     const fm = Number(chat.fmIndex ?? -1);
-    const greet = fm >= 0 && characterCache.alternateGreetings?.[fm] != null ? characterCache.alternateGreetings[fm] : characterCache.firstMessage;
+    const greet0 = fm >= 0 && characterCache.alternateGreetings?.[fm] != null ? characterCache.alternateGreetings[fm] : characterCache.firstMessage;
+    const greet = greetOverride && greetOverride.raw === String(greet0 ?? '') ? greetOverride.text : greet0;
     const push = (role, raw) => { const text = resolveNames(raw); if (text.trim()) out.push({ role, text, key: msgKey(role, text), loose: looseKey(role, text) }); };
     if (greet && String(greet).trim()) push('assistant', greet);
     for (const m of chat.message) push(m?.role === 'user' ? 'user' : 'assistant', String(m?.data ?? ''));
@@ -618,6 +632,7 @@
     await loadStory(chatKey);
     await loadCards(chatKey);
     await loadFacts(chatKey);
+    await prepGreet(id.chatObj);
     timeline = rawTimeline(id.chatObj);
     rebuildChunks();
     seedPeople();
@@ -3022,6 +3037,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     // 다른 채팅이면 처음부터 연다. 방금 읽은 신원 캐시에는 채팅 본문이 없어서 지워야 원본을 다시 읽는다
     if (id.key !== chatKey) { chatKey = ''; identityCache = null; return ensureChat(); }
     chatLabel = { char: id.char, chat: id.chat };
+    await prepGreet(id.chatObj);
     const fresh = rawTimeline(id.chatObj);
     if (fresh.length && (fresh.length !== timeline.length || fresh.some((m, i) => m.key !== timeline[i]?.key))) { timeline = fresh; rebuildChunks(); }
     return true;
@@ -3486,6 +3502,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.12', '2026-10-21', ['퍼메 선택기 봇 고침: 첫 인사말에 조건({{#if}})으로 퍼메를 여러 개 넣은 봇은 안 고른 퍼메까지 기억하던 것을, Risu로 조건을 풀어 고른 퍼메만 기억해요. 이미 잘못 저장된 첫 인사말 기억은 채팅을 다시 열면 빠져요.']],
     ['1.0.11', '2026-10-21', ['설정 › 메인 모델에게 하는 안내 옆에 "기본값으로" 버튼이 생겼어요. 고친 안내를 한 번에 처음 문장으로 되돌려요.']],
     ['1.0.10', '2026-10-21', ['메인 모델에게 관계 · 약속 · 비밀 · 태그 줄은 자동 요약이라 틀릴 수 있다고 한 줄 알려 줘요. 원문 기억 줄이나 지금 채팅과 다르면 그쪽을 믿게. 원문 기억 줄에는 안 붙여요.']],
     ['1.0.9', '2026-10-21', ['미리 보기: "이번 답장에 넣은 기억" 칸에 보낼 말을 적고 Enter. 채팅 끝 메시지 몇 개와 같이 어떤 기억이 들어갈지 초록 (미리 보기)로 보여 줘요. 모델에는 안 보내고, 실제로 넣은 기록도 안 바뀌어요.', '대사 이름표: "미나: …" 대사가 여러 문장이어도 둘째 문장부터 이름이 붙어요.', '메인 모델에게 지금 메시지 번호를 알려 주고, 방금 흐름(바로 앞 메시지들)은 예전 기억과 따로 묶어 넣어요.', '서술 뒤 같은 줄에 "이름:"이 오면 서술까지 이름으로 잡던 것 고침.', '기억 마디에서 Jev 대신 임베딩 · 규칙을 써요. 기억할 낱말은 규칙으로, 켤 마디는 장면과 뜻이 가까운 순서로 골라요. 시험해 보니 기억은 같거나 조금 더 잘 꺼내고, Jev 호출은 약 40% 줄고 더 빨라졌어요.']],
