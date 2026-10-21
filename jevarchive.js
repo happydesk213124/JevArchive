@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.12
+//@display-name 🏛️JevArchive 1.0.13
 //@api 3.0
-//@version 1.0.12
+//@version 1.0.13
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -952,9 +952,9 @@ let lastRescue = null;
     if (ppl.length) out.push('People met (first seen #): ' + ppl.map(p => p.name + ' #' + (p.first + 1)).join(', '));
     const rels = Object.values(story.pairs).filter(p => !story.people[p.a]?.hidden && !story.people[p.b]?.hidden && (p.type || Math.abs(p.aff) >= 2 || (settings.intim && p.intim?.n))).sort((a, b) => b.co - a.co).slice(0, 12);
     for (const p of rels) out.push('Relationship ' + p.a + ' ↔ ' + p.b + ': ' + [p.type ? relEn(p) : null, affEn(p.aff), settings.intim && p.intim?.n ? 'intimate ×' + p.intim.n + ' (first #' + (p.intim.first + 1) + ', last #' + (p.intim.last + 1) + ')' : null].filter(Boolean).join(', '));
-    const pr = [...story.threads, ...memThreads()].filter(t => !isSecret(t)).sort((a, b) => a.mi - b.mi).slice(-12);
+    const pr = [...liveThreads(), ...memThreads()].filter(t => !isSecret(t)).sort((a, b) => a.mi - b.mi).slice(-12);
     for (const t of pr) out.push('Promise (' + (t.status === 'open' ? 'still open' : 'done') + ') ' + (t.who || 'someone') + (t.to ? ' → ' + t.to : '') + ': "' + clip(t.text, 120) + '" (#' + (t.mi + 1) + ')');
-    const sec = [...story.threads, ...memThreads()].filter(t => isSecret(t)).sort((a, b) => a.mi - b.mi).slice(-6);
+    const sec = [...liveThreads(), ...memThreads()].filter(t => isSecret(t)).sort((a, b) => a.mi - b.mi).slice(-6);
     for (const t of sec) out.push(t.status === 'open' ? 'Secret (still hidden' + (t.who ? ', kept by ' + t.who + (t.to ? ' from ' + t.to : '') : '') + '): "' + clip(t.text, 120) + '" — keep it hidden unless the story reveals it.' : 'Secret (revealed): "' + clip(t.text, 120) + '"');
     return out.length > 1 ? out : [];
   }
@@ -1422,7 +1422,37 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   // 비밀: threads에 kind: 'secret'으로 같이 둔다. who가 to(없으면 모두)에게 숨기는 것. 드러나면 status 'done'
   const SECRET_CUE = /비밀|숨기|숨겨|숨긴|감추|감춰|모르게|몰래|말하지\s*마|말하지\s*않|말\s*못|들키|들킬|정체|사실은|아무도\s*모르|아무한테도|secret|hiding|hidden/u;
   const isSecret = (t) => t.kind === 'secret';
-  function openThreads() { return story.threads.filter(t => t.status === 'open' && !isSecret(t)); }
+  // ── 메시지를 지우거나 고치거나 스와이프하면: 그 메시지에서 나온 약속 · 비밀은 숨기고(gone), 그 메시지가 닫은 약속은 다시 연다.
+  //    지우지는 않는다: 스와이프로 되돌리면 그대로 돌아온다. 번호(mi)는 메시지 지문으로 지금 자리에 다시 맞춘다
+  let kiTl = null, kiLen = -1, kiLast = '', kiMap = new Map();
+  function keyMi(k) {
+    const sig = timeline[timeline.length - 1]?.key ?? '';
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass || kiTl !== timeline || kiLen !== timeline.length || kiLast !== sig) { kiMap = new Map(timeline.map((m, i) => [m.key, i])); kiTl = timeline; kiLen = timeline.length; kiLast = sig; }
+      const mi = kiMap.get(k);
+      if (mi != null && timeline[mi]?.key === k) return mi;
+      if (mi == null && !pass) return null;
+    }
+    return null;
+  }
+  const ckKey = (ck) => { const s = String(ck ?? ''); const i = s.lastIndexOf(':'); return i < 0 ? '' : s.slice(0, i); };
+  function syncThreads() {
+    if (!timeline.length) return;   // 채팅을 아직 못 읽었으면 건드리지 않는다
+    for (const t of story.threads) {
+      if (t.ck) { const mi = keyMi(ckKey(t.ck)); t.gone = mi == null; if (mi != null) t.mi = mi; }
+      if (t.status === 'done' && t.closedKey && keyMi(t.closedKey) == null) { t.status = 'open'; t.reopenKey = t.closedKey; delete t.closedKey; }
+      else if (t.status === 'open' && t.reopenKey && keyMi(t.reopenKey) != null) { t.status = 'done'; t.closedKey = t.reopenKey; delete t.reopenKey; }
+    }
+  }
+  /** 지금 채팅에 원래 메시지가 있는 약속 · 비밀만 */
+  function liveThreads() { syncThreads(); return story.threads.filter(t => !t.gone); }
+  /** 같은 글의 약속 · 비밀이 이미 있나. 원래 메시지가 사라진 것이면 지금 메시지로 옮겨 살린다 (고친 메시지를 다시 정리할 때) */
+  function sameThread(text, c) {
+    const old = story.threads.find(t => t.text === text);
+    if (old && old.ck && keyMi(ckKey(old.ck)) == null) { old.ck = ckOf(c); old.mi = c.mi; old.gone = false; }
+    return !!old;
+  }
+  function openThreads() { return liveThreads().filter(t => t.status === 'open' && !isSecret(t)); }
   // ── 6하원칙 칸: 문장을 어절로 나눠 어절마다 Jev가 칸을 고른다 (실제 Jev로 문장 6개 · 질문 56개에 0.7초) ──
   const ROLES = { who: 'who does it (the doer / subject)', with: 'together with whom (a companion who does it with them)', whom: 'to whom, or kept from whom (the target of the action)', when: 'when (time, date, timing)', where: 'where (place)', what: 'what is done or what it is about (object, action, the fact itself)', how: 'how (manner, means)', why: 'why (reason, purpose)', none: 'none of these (filler, ending, or connective)' };
   const ROLE_KO = { who: '누가', with: '누구랑', whom: '누구에게', when: '언제', where: '어디서', what: '무엇을', how: '어떻게', why: '왜' };
@@ -1440,7 +1470,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     while (slots.length && slots[slots.length - 1] === 'X') slots.pop();
     return slots.join('/');
   }
-  function openSecrets() { return story.threads.filter(t => t.status === 'open' && isSecret(t)); }
+  function openSecrets() { return liveThreads().filter(t => t.status === 'open' && isSecret(t)); }
 
   /** 아직 이야기 분석을 안 한 메시지 (Risu가 안 보낸 것 중) */
   function storyBacklog() {
@@ -1668,13 +1698,16 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           if (ps === 'none') return;
           const k = Number(String(ps ?? 's0').slice(1)) || 0;
           const text = clip(unquote(withPrev(j.sents, k) ?? j.c.text), 160);
-          if (story.threads.some(t => t.text === text)) return;
+          if (sameThread(text, j.c)) return;
           let w = who && who !== 'unclear' ? who : selfAuthor(j.c);
           if (w && (isRecipient(j.c.text, w) || isVocative(j.c.text, w)) && !speakersIn(j.c.text).includes(w) && !isSubject(j.c.text, w)) w = '';
           story.threads.push({ id: ++story.seq, text, who: w, to: to && to !== 'none' && to !== w ? to : null, mi: j.c.mi, ck: ckOf(j.c), status: 'open', at: Date.now() });
         });
-        closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
-        revealJobs.forEach((t, i) => { if (Number(a[`v${i}`]?.noul ?? 0) >= 0.7) { t.status = 'done'; t.closedMi = mis[mis.length - 1]; } });
+        // 닫은 메시지 지문도 둔다: 그 메시지를 지우면 다시 열린다. 이번 묶음 중 약속 글과 낱말이 가장 많이 겹치는 메시지 (같으면 뒤쪽 · 없으면 마지막)
+        const closer = (t) => { const tg = gramsOf(t.text); let best = mis[mis.length - 1], bs = 0; for (const mi of mis) { let n = 0; for (const g of gramsOf(timeline[mi]?.text ?? '')) if (tg.has(g)) n++; if (n && n >= bs) { bs = n; best = mi; } } return best; };
+        const close = (t) => { const mi = closer(t); t.status = 'done'; t.closedMi = mi; t.closedKey = timeline[mi]?.key; delete t.reopenKey; };
+        closeJobs.forEach((t, i) => { if (Number(a[`c${i}`]?.noul ?? 0) >= 0.7) close(t); });
+        revealJobs.forEach((t, i) => { if (Number(a[`v${i}`]?.noul ?? 0) >= 0.7) close(t); });
         ptagJobs.forEach((j, i) => {
           (story.tagAsked ??= []).push(j.h);
           const ans = a[`t${i}`];
@@ -1691,7 +1724,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
           const [ss] = topChoice(a[`ss${i}`]);
           if (ss === 'none') return;
           const text = clip(unquote(withPrev(j.sents, Number(String(ss ?? 's0').slice(1)) || 0) ?? j.c.text), 160);
-          if (story.threads.some(t => t.text === text)) return;
+          if (sameThread(text, j.c)) return;
           const [who] = topChoice(a[`sw${i}`]);
           const [from] = topChoice(a[`sf${i}`]);
           let w = who && who !== 'unclear' ? who : selfAuthor(j.c);
@@ -1717,7 +1750,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
       } catch (error) { setError('이야기 분석', error); }
     }
     // 6하원칙 칸: 칸이 없는 열린 약속 · 비밀 (새로 생긴 것 먼저) 몇 개를 한 번에. 실패해도 원문으로 쓴다
-    const tagJobs = settings.memForm === 'slots' ? story.threads.filter(t => t.status === 'open' && !t.tags).slice(-4) : [];
+    const tagJobs = settings.memForm === 'slots' ? liveThreads().filter(t => t.status === 'open' && !t.tags).slice(-4) : [];
     if (tagJobs.length) {
       const tq = {};
       tagJobs.forEach((t, i) => tagWords(t.text).forEach((w, k) => { tq[`w${i}_${k}`] = { type: 'choice', instructions: `In the sentence «${unquote(t.text)}», which role does the word «${w}» play?`, criteria: ROLES }; }));
@@ -3502,6 +3535,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.13', '2026-10-22', ['메시지를 지우거나 고치거나 스와이프하면, 그 메시지에서 나온 약속 · 비밀은 숨기고 메인 모델에도 안 넣어요. 그 메시지가 지킨 약속은 다시 열려요. 되돌리면 그대로 돌아와요.', '메시지를 중간에 지워도 약속 · 비밀의 메시지 번호(#)가 지금 자리로 맞춰져요.']],
     ['1.0.12', '2026-10-21', ['퍼메 선택기 봇 고침: 첫 인사말에 조건({{#if}})으로 퍼메를 여러 개 넣은 봇은 안 고른 퍼메까지 기억하던 것을, Risu로 조건을 풀어 고른 퍼메만 기억해요. 이미 잘못 저장된 첫 인사말 기억은 채팅을 다시 열면 빠져요.']],
     ['1.0.11', '2026-10-21', ['설정 › 메인 모델에게 하는 안내 옆에 "기본값으로" 버튼이 생겼어요. 고친 안내를 한 번에 처음 문장으로 되돌려요.']],
     ['1.0.10', '2026-10-21', ['메인 모델에게 관계 · 약속 · 비밀 · 태그 줄은 자동 요약이라 틀릴 수 있다고 한 줄 알려 줘요. 원문 기억 줄이나 지금 채팅과 다르면 그쪽을 믿게. 원문 기억 줄에는 안 붙여요.']],
@@ -3729,7 +3763,7 @@ details.more.danger summary{color:var(--tx2)}
   }
   /** 기억 탭의 약속 · 비밀 문장을 약속 탭 줄 모양으로. 이야기 정리가 같은 메시지에서 이미 잡은 건 뺀다 */
   function memThreads() {
-    const caught = new Set(story.threads.map(t => `${t.kind === 'secret' ? 's' : 'p'}:${t.mi}`));
+    const caught = new Set(liveThreads().map(t => `${t.kind === 'secret' ? 's' : 'p'}:${t.mi}`));
     const st = story.memThreads ?? {};
     const out = [];
     for (const f of facts) {
@@ -3752,7 +3786,7 @@ details.more.danger summary{color:var(--tx2)}
     return out;
   }
   /** 약속 탭에 보이는 전부: 이야기 정리로 잡은 것 + 기억에서 온 것, 메시지 순서대로 */
-  function allThreads() { return [...story.threads, ...memThreads()].sort((a, b) => a.mi - b.mi); }
+  function allThreads() { return [...liveThreads(), ...memThreads()].sort((a, b) => a.mi - b.mi); }
   const openCount = (sec) => allThreads().filter(t => t.status === 'open' && isSecret(t) === sec).length;
 
   function promiseHtml(t) {
@@ -4442,7 +4476,7 @@ details.more.danger summary{color:var(--tx2)}
     const p = story.people[name];
     if (!p) return '<div class="empty">인물을 찾을 수 없어요.</div>';
     const rels = pairsOf(name).sort((a, b) => b.co - a.co);
-    const th = story.threads.filter(t => t.who === name || t.to === name).slice().reverse().slice(0, 6);
+    const th = liveThreads().filter(t => t.who === name || t.to === name).slice().reverse().slice(0, 6);
     const acts = [];
     const forms = nameForms(story.people[name] ?? { name, aliases: [] });
     for (let i = facts.length - 1; i >= 0 && acts.length < 8; i--) if ([0, 1, 2].some(j => forms.some(n => facts[i].slots[j]?.includes(n)))) acts.push(facts[i]);
@@ -5390,7 +5424,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
