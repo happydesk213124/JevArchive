@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.13
+//@display-name 🏛️JevArchive 1.0.14
 //@api 3.0
-//@version 1.0.13
+//@version 1.0.14
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1894,13 +1894,19 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
     if (speakerCache.has(key)) return speakerCache.get(key);
     const known = (n) => { const p = story.people[n]; return !!p && !p.hidden && !isTitleName(p.name); };
     const out = new Map();
-    let speaker = null;
-    for (const id of msgChunkIds(mi)) for (const s of sentencesOf(stripStatus(chunks[id].text))) {
-      const sp = /^([^\s:("“]{1,12})\s*(?:\([^)]{0,20}\))?\s*:/u.exec(s);
-      if (sp) speaker = peopleIn(sp[1]).find(known) ?? null;
-      if (speaker) out.set(unquote(s), speaker);
-      const qn = (s.match(/["“”]/g) ?? []).length;
-      if (sp ? qn % 2 === 0 : qn % 2 === 1) speaker = null;
+    let speaker = null, lineMode = false;
+    // 따옴표 있는 대사("미나: "…. …"")는 따옴표가 닫힐 때까지, 따옴표 없는 대사("미나: 문장. 문장.")는 그 줄 끝까지 같은 사람
+    // 줄 끝을 알아야 해서 조각(줄바꿈이 공백으로 합쳐짐)이 아니라 원래 메시지에서 줄을 나눈다
+    for (const line of stripStatus(memText(m.text)).split('\n')) {
+      if (lineMode) { speaker = null; lineMode = false; }
+      for (const s of sentencesOf(line)) {
+        const sp = /^([^\s:("“]{1,12})\s*(?:\([^)]{0,20}\))?\s*:/u.exec(s);
+        if (sp) { speaker = peopleIn(sp[1]).find(known) ?? null; lineMode = !/^\s*["“”'‘「『]/u.test(s.slice(sp[0].length)); }
+        if (speaker) out.set(unquote(s), speaker);
+        if (lineMode) continue;
+        const qn = (s.match(/["“”]/g) ?? []).length;
+        if (sp ? qn % 2 === 0 : qn % 2 === 1) speaker = null;
+      }
     }
     if (speakerCache.size > 400) speakerCache.clear();
     speakerCache.set(key, out);
@@ -1909,7 +1915,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = g.picks;
   const speakerOf = (mi, sent) => speakerMap(mi).get(unquote(sent)) ?? null;
   /** 대사 이름표: "미나: "…. …."를 문장으로 자르면 둘째 문장부터 이름이 떨어진다 → 말한 사람을 알면 다시 붙인다
    *  확실한 "이름: 대사"에서만 (speakerMap). 서술 속 대사("루시아는 물러섰다. "난 …"")는 추측이라 안 붙인다 */
-  const withSpeaker = (mi, s) => { const sp = speakerOf(mi, s); return sp && !/^[^\s:("“]{1,12}\s*(?:\([^)]{0,20}\))?\s*:/u.test(s) ? `${sp}: "${unquote(s)}"` : s; };
+  // 원문에 따옴표가 있던 대사면 따옴표로 감싸고, 없던 대사("미나: 문장.")면 그대로 이름만
+  const withSpeaker = (mi, s) => { const sp = speakerOf(mi, s); return sp && !/^[^\s:("“]{1,12}\s*(?:\([^)]{0,20}\))?\s*:/u.test(s) ? (/["“”]/.test(s) ? `${sp}: "${unquote(s)}"` : `${sp}: ${s}`) : s; };
   /** 그 조각에서 주어로 나오나 (리안은 · 리안이 …) */
   const isSubject = (text, name) => new RegExp(`(^|[^가-힣])${escRe(name)}(?:은|는|이|가|께서)(?=[^가-힣]|$)`, 'u').test(String(text));
   /** "예린이한테는" · "미로에게" · "선생님께"처럼 말을 받는 쪽 (받침 뒤 "이"도) */
@@ -3535,6 +3542,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.14', '2026-10-22', ['따옴표 없는 대사(미나: 문장. 문장. 문장.)도 그 줄 끝까지 같은 사람으로 보고, 둘째 문장부터 이름표(미나:)를 붙여 넣어요. 다음 줄은 따로 봐요.']],
     ['1.0.13', '2026-10-22', ['메시지를 지우거나 고치거나 스와이프하면, 그 메시지에서 나온 약속 · 비밀은 숨기고 메인 모델에도 안 넣어요. 그 메시지가 지킨 약속은 다시 열려요. 되돌리면 그대로 돌아와요.', '메시지를 중간에 지워도 약속 · 비밀의 메시지 번호(#)가 지금 자리로 맞춰져요.']],
     ['1.0.12', '2026-10-21', ['퍼메 선택기 봇 고침: 첫 인사말에 조건({{#if}})으로 퍼메를 여러 개 넣은 봇은 안 고른 퍼메까지 기억하던 것을, Risu로 조건을 풀어 고른 퍼메만 기억해요. 이미 잘못 저장된 첫 인사말 기억은 채팅을 다시 열면 빠져요.']],
     ['1.0.11', '2026-10-21', ['설정 › 메인 모델에게 하는 안내 옆에 "기본값으로" 버튼이 생겼어요. 고친 안내를 한 번에 처음 문장으로 되돌려요.']],
