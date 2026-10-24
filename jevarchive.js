@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.15
+//@display-name 🏛️JevArchive 1.0.16
 //@api 3.0
-//@version 1.0.15
+//@version 1.0.16
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1036,14 +1036,17 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       if (cfg.story && cfg.overview !== false && latest) tailAsk.ov = { type: 'noul', instructions: `Does the user's latest message ask to list, count, or look back over many things from the whole story so far — for example everyone they have met, all promises, all relationships, or how many times something happened? «${clip(latest, 300)}»` };
       // 실험: Voyage 리랭커로 최종 심사 (judge = Jev 점수 대신, hybrid = 둘의 평균). 벤치에서만 __JA_EXP로 켠다
       const allC = [...first, ...gPicks];
+      // 시험 para7 (사용자 설계): Jev는 문단을 고른다
+      const paraC = (globalThis.__JA_EXP ?? {}).para7 ? parasOf(allC) : null;
       const RR = (globalThis.__JA_EXP ?? {}).rerank;
       let rrScores = null;
       if (RR && allC.length) {
         const rq = `Find earlier story records that would help continue this roleplay scene naturally.\nRecent scene: ${ctx.slice(-800)}\nLatest message: ${latest}`;
         try { rrScores = await timed(tr, '리랭크', () => voyageRerank(rq, allC.map(c => c.text)), () => `후보 ${allC.length}개`); } catch (error) { setError('리랭크', error); }
       }
-      const r1 = await timed(tr, 'Jev 채점', () => judge(RR === 'judge' && rrScores ? [] : allC, state, !(RR === 'judge' && rrScores), { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
+      const r1 = await timed(tr, 'Jev 채점', () => judge(RR === 'judge' && rrScores ? [] : (paraC ?? allC), state, !(RR === 'judge' && rrScores), { ...(dir?.q ?? {}), ...tailAsk }), () => `후보 ${first.length}개${dir ? ` + 감독${dir.short.length ? ` (카드 ${dir.short.length}장)` : ''}` : ''}`);
       ({ levels, need } = r1);
+      if (paraC) levels = paraLevels(paraC, levels);
       if (rrScores) {
         const E = globalThis.__JA_EXP ?? {};
         const lv = (s) => Math.min(3, (s / (E.rrMin ?? 0.5)) * KEEP_LEVEL);   // 리랭커 점수 rrMin = 문턱(1.5)
@@ -1072,7 +1075,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       }
       // 구조망 (시험 스위치): Jev가 자른 후보 중 리랭커가 마지막 메시지와 아주 가깝다고 본 것을 살린다
       const RS = globalThis.__JA_EXP ?? {};
-      if ((RS.rescue ?? settings.rescue !== false) && latest && /voyageai\.com/.test(embedConfig(settings).endpoint ?? '')) {
+      if (!paraC && (RS.rescue ?? settings.rescue !== false) && latest && /voyageai\.com/.test(embedConfig(settings).endpoint ?? '')) {
         const cut = allC.filter(c => (levels.get(c.id) ?? 0) < (RS.keep ?? settings.keepLevel ?? 1.3)).slice(0, 40);
         if (cut.length) {
           try {
@@ -1134,7 +1137,8 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
     let used = estimateTokens(headText) + estimateTokens(MEM_LEGEND) + estimateTokens(nowNo) + estimateTokens(caveat);
 
     const units = new Map();
-    const factCost = (f) => estimateTokens(cfg.memForm === 'sentence' ? f.sent : f.line) + 3;
+    const P7 = !!(globalThis.__JA_EXP ?? {}).para7 && (globalThis.__JA_EXP ?? {}).p7Out !== 0;
+    const factCost = (f) => estimateTokens(P7 ? p7Line(f) : cfg.memForm === 'sentence' ? f.sent : f.line) + 3;
     const rawCost = (c) => estimateTokens(c.text) + 4;
     const addFact = (f, pri) => { if (!f || f.mi >= limitMi || units.has(`f${f.id}`)) return false; const k = factCost(f); if (used + k > cfg.budget) return false; units.set(`f${f.id}`, { f, pri }); used += k; return true; };
     const addRaw = (c, pri) => { if (!c || c.mi >= limitMi || units.has(`c${c.id}`)) return false; const k = rawCost(c); if (used + k > cfg.budget) return false; units.set(`c${c.id}`, { c, pri }); used += k; return true; };
@@ -1167,7 +1171,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
     const secretMi = new Map();
     if (settings.story) for (const t of [...openSecrets(), ...memThreads().filter(t => isSecret(t) && t.status === 'open')]) if (!secretMi.has(t.mi)) secretMi.set(t.mi, t.to ?? recipientIn(t.text));
     const sTag = (mi) => (secretMi.has(mi) ? `(secret${secretMi.get(mi) ? ` — ${secretMi.get(mi)} must not learn it` : ''}) ` : '');
-    const lineOf = (p) => (p.t === 'f' ? (asSent ? `#${p.mi + 1} ${sTag(p.mi)}${withSpeaker(p.mi, p.u.sent)}` : `#${p.mi + 1} ${sTag(p.mi)}${p.u.line}`) : `<#${p.mi + 1} ${timeline[p.mi]?.role === 'user' ? 'user' : 'char'}> ${p.u.text}`);
+    const lineOf = (p) => (p.t === 'f' ? (P7 ? `#${p.mi + 1} ${sTag(p.mi)}${p7Line(p.u)}` : asSent ? `#${p.mi + 1} ${sTag(p.mi)}${withSpeaker(p.mi, p.u.sent)}` : `#${p.mi + 1} ${sTag(p.mi)}${p.u.line}`) : `<#${p.mi + 1} ${timeline[p.mi]?.role === 'user' ? 'user' : 'char'}> ${p.u.text}`);
     // 방금 흐름(창 바로 앞 메시지들)은 따로 묶는다: 예전 기억과 섞이면 메인 모델이 뭐가 최근인지 모른다
     const lines = picked.filter(p => p.pri !== 0).map(lineOf);
     const recentLines = picked.filter(p => p.pri === 0).map(lineOf);
@@ -1900,6 +1904,10 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
   }
   /** 문장마다 말한 사람: "세아 (shy): "…" 로 시작하면 따옴표가 닫힐 때까지 세아. 메시지마다 한 번 계산해 둔다 (원문 지문으로) */
   const speakerCache = new Map();
+  // 소설 서술 끝 (…었다 · …했다 …), 말하기 동사 (말했다 · 속삭였다 …), 이름표처럼 보여도 사람이 아닌 칸 (장소: · 시간: …)
+  const NARR_END = /(?:었|았|였|했|렸|졌|웠|냈|섰|겼|갔|왔|봤|줬|쳤|켰)다[.!…]*["”]?$/u;
+  const SAY_VERB = /(?:말했|속삭였|물었|외쳤|중얼거렸|대답했|소리쳤|덧붙였|투덜거렸|되물었|답했|말을 이었|말하며|웃으며 말|입을 열었)/u;
+  const LABEL_STOP = /^(?:장소|시간|날짜|위치|날씨|상태|일시|시각|요일|계절|기분|복장|HP|MP|SP|EXP|Lv|레벨|코인|골드|체력|마나|경험치|스탯|능력치|목표|퀘스트|메모|참고|주의|요약|선택지?|결과|보상|status|time|date|place|location|weather|note)$/iu;
   function speakerMap(mi) {
     const m = timeline[mi];
     if (!m) return new Map();
@@ -1907,20 +1915,38 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
     if (speakerCache.has(key)) return speakerCache.get(key);
     const known = (n) => { const p = story.people[n]; return !!p && !p.hidden && !isTitleName(p.name); };
     const out = new Map();
-    let speaker = null, lineMode = false;
+    // 주어로 나온 아는 인물이 딱 한 명이면 그 사람 (서하는 · 카엘이 …)
+    const subjOf = (s) => { const ps = personList().filter(p => known(p.name) && isSubject(s, p.name)); return ps.length === 1 ? ps[0].name : null; };
+    const narr = (s) => NARR_END.test(s.trim()) || !!subjOf(s);
+    let speaker = null, lineMode = false, starts = false, prevSubj = null, prevAt = -9, k = 0;
     // 따옴표 있는 대사("미나: "…. …"")는 따옴표가 닫힐 때까지, 따옴표 없는 대사("미나: 문장. 문장.")는 그 줄 끝까지 같은 사람
     // 줄 끝을 알아야 해서 조각(줄바꿈이 공백으로 합쳐짐)이 아니라 원래 메시지에서 줄을 나눈다
     for (const line of stripStatus(memText(m.text)).split('\n')) {
       if (lineMode) { speaker = null; lineMode = false; }
-      for (const s of sentencesOf(line)) {
+      const sents = sentencesOf(line);
+      for (let i = 0; i < sents.length; i++, k++) {
+        const s = sents[i];
         const sp = /^([^\s:("“]{1,12})\s*(?:\([^)]{0,20}\))?\s*:/u.exec(s);
-        if (sp) { speaker = peopleIn(sp[1]).find(known) ?? null; lineMode = !/^\s*["“”'‘「『]/u.test(s.slice(sp[0].length)); }
+        starts = false;
+        // "이름:" 이름표가 있으면 그 이름 그대로 (인물 목록에 아직 없어도). 아는 인물이면 그 이름으로 맞춘다. 상태창 칸(장소: · 시간: …)은 빼고
+        if (sp) { const raw = sp[1].replace(/[*_`]/g, '').trim(); speaker = peopleIn(raw).find(known) ?? (LABEL_STOP.test(raw) || NAME_STOP.has(raw.toLowerCase()) || !/^[가-힣A-Za-z][가-힣A-Za-z0-9·._-]{0,11}$/u.test(raw) ? null : raw); lineMode = !/^\s*["“”'‘「『]/u.test(s.slice(sp[0].length)); starts = true; }
         // 따옴표 없는 대사 뒤 같은 줄에 서술이 오면 거기서 끊는다: 인물이 주어(서하는 · 도윤이 …)거나 소설 서술 끝(…었다 · …했다)
-        else if (lineMode && speaker && (/(?:었|았|였|했|렸|졌|웠|냈|섰|겼)다[.!…]*$/u.test(s.trim()) || personList().some(p => isSubject(s, p.name)))) { speaker = null; lineMode = false; }
+        else if (lineMode && speaker && narr(s)) { speaker = null; lineMode = false; }
+        // 이름표 없이 따옴표로 여는 대사: 따옴표가 닫힌 바로 뒤 문장이 "~가 말했다 · 속삭였다 …"면 그 사람, 아니면 바로 앞(두 문장 안) 서술의 주어
+        //  둘 다 없으면 안 붙인다 (틀리게 붙이면 다른 사람 말이 된다)
+        else if (!speaker && /^\s*["“]/u.test(s)) {
+          let j = i, q = 0;
+          for (; j < sents.length; j++) { q += (sents[j].match(/["“”]/g) ?? []).length; if (q % 2 === 0) break; }
+          const after = sents[j + 1];
+          speaker = (after && SAY_VERB.test(after) ? subjOf(after) : null) ?? (k - prevAt <= 2 ? prevSubj : null);
+          starts = !!speaker;
+        }
         if (speaker) out.set(unquote(s), speaker);
+        else if (m.role === 'user' && personaCache && !narr(s) && !/["“”]/.test(s)) out.set(unquote(s), personaCache);   // 내 메시지의 말은 나 (서술 같은 문장은 빼고)
+        if (!/["“”]/.test(s)) { const sj = subjOf(s); if (sj) { prevSubj = sj; prevAt = k; } }
         if (lineMode) continue;
         const qn = (s.match(/["“”]/g) ?? []).length;
-        if (sp ? qn % 2 === 0 : qn % 2 === 1) speaker = null;
+        if (starts ? qn % 2 === 0 : qn % 2 === 1) speaker = null;
       }
     }
     if (speakerCache.size > 400) speakerCache.clear();
@@ -2715,7 +2741,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       if (!slots.when.length && old[3]) slots.when.push(old[3]);
       if (!slots.where.length && old[4]) slots.where.push(old[4]);
       const entry = factStore.get(j.f.key)?.find(x => x.pos === j.f.pos && x.si === j.f.si);
-      if (entry) { entry.s = ROLE_ORDER.map(r => slots[r].join(' ')); delete entry.t; factDirty.add(shardOf(j.f.key)); }
+      if (entry) { entry.s = ROLE_ORDER.map(r => slots[r].join(' ')); delete entry.t; entry.t7 = 1; factDirty.add(shardOf(j.f.key)); }
       tagWanted.delete(factKey(j.f));
     }
     rebuildFacts();
@@ -2893,6 +2919,50 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
     for (const h of heads) { const a = statOf(h.sent); if (a && (!byStat.has(a) || byStat.get(a).mi < h.mi)) byStat.set(a, h); }
     const list = [...heads].filter(h => { const a = statOf(h.sent); return !a || byStat.get(a) === h; }).sort((a, b) => a.mi - b.mi).slice(-(E.nowN ?? 6));
     return list.length ? [`Latest state (newer records replaced older ones): ${list.map(f => `#${f.mi + 1} ${withSpeaker(f.mi, f.sent)}`).join(' | ')}`] : [];
+  }
+
+  // ══ 시험 para7 (사용자 설계): Jev는 "문단"을 고르고, 고른 문단의 사건들을 7하원칙(누가 · 누구랑 · 누구에게 · 언제 · 어디서 · 무엇을 · 어떻게 · 왜) 칸으로 넣는다 ══
+  //  Jev는 글을 못 쓰니까 칸 나누기 = 문장의 낱말마다 Jev가 칸을 고른다 (tagLater). 사건 = 기억 문장 하나. 언제 · 어디서가 비면 상태창 시간 · 장소로
+  const P7_BASE = 1e7;
+  function parasOf(cands) {
+    const out = [], seen = new Set();
+    for (const f of cands) {
+      const c = chunks[msgChunkIds(f.mi)?.[f.pos]];
+      if (!c || seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push({ id: P7_BASE + c.id, c, text: clip(stripStatus(c.text), 600) });
+      if (out.length >= ((globalThis.__JA_EXP ?? {}).paraN ?? 24)) break;
+    }
+    return out;
+  }
+  /** 문단 점수 → 그 문단의 기억 문장 점수 */
+  function paraLevels(paraC, lv) {
+    const out = new Map();
+    for (const p of paraC) {
+      const l = lv.get(p.id) ?? 0;
+      for (const f of facts) if (f.mi === p.c.mi && f.pos === p.c.pos && FACT_K[f.k] && (f.w ?? 3) >= WORTH_LOW) out.set(f.id, Math.max(out.get(f.id) ?? 0, l));
+    }
+    return out;
+  }
+  const P7_KO = [['who', '누가'], ['with', '누구랑'], ['whom', '누구에게'], ['when', '언제'], ['where', '어디서'], ['what', '무엇을'], ['how', '어떻게'], ['why', '왜']];
+  function p7Line(f) {
+    if (!f.entry?.t7) return withSpeaker(f.mi, f.sent);   // 칸을 아직 못 나눈 문장은 원문
+    const s = Object.fromEntries(ROLE_ORDER.map((r, i) => [r, f.slots?.[i] ?? '']));
+    if (!s.who) { const sp = speakerOf(f.mi, f.sent); if (sp) s.who = sp; }
+    const ck = storyClock(f.mi + 1);
+    if (!s.when && (ck.d || ck.t)) s.when = [ck.d, ck.t].filter(Boolean).join(' ');
+    if (!s.where && ck.place) s.where = ck.place;
+    const bits = P7_KO.filter(([r]) => s[r]).map(([r, ko]) => `${ko}=${s[r]}`);
+    return bits.length ? `[${FACT_KO[f.k] ?? '사실'}] ${bits.join(' · ')}` : withSpeaker(f.mi, f.sent);
+  }
+  /** 저장된 기억 문장 전부 칸 나누기 (시험: 저장 때 7하원칙으로 정리하는 설계) */
+  async function tagAllFacts() {
+    const todo = facts.filter(f => FACT_K[f.k] && (f.w ?? 3) >= WORTH_LOW && !f.entry?.t7);
+    const batches = [];
+    for (let i = 0; i < todo.length; i += 12) batches.push(todo.slice(i, i + 12));
+    let next = 0, n = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(settings.jevParallel ?? 2, batches.length)) }, async () => { while (next < batches.length) { const b = batches[next++]; const r = await tagLater(b); n += r; } }));
+    return n;
   }
 
   // ══ 마디 지도 (뉴런처럼) ══
@@ -3656,6 +3726,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.16', '2026-10-24', ['기억에 누가 한 말인지 더 붙여요: 인물 목록에 아직 없는 이름표(레아: …)도 그 이름, 서술 뒤에 오는 대사(카엘은 어깨를 두드렸다. "…")는 앞 문장 주어, 대사 뒤 "~가 속삭였다 · 말했다"면 그 사람, 내 메시지의 말은 내 이름. 확실하지 않으면 안 붙여요.']],
     ['1.0.15', '2026-10-22', ['최신 정보로 바꾸기 (기본 켬): 새 기억이 생기면 비슷한 옛 기억을 찾아 Jev가 "새 것이 옛 것을 대체하나"만 판정해요. 코인 128 → 900, 레벨, 무기, 이사, 머리색처럼 바뀐 값은 옛 기억 대신 최신 기억을 넣고, 바뀐 값들은 Latest state 한 줄로 늘 알려 줘요. 과거를 물으면(예전엔 · 원래 · 처음) 옛 기억도 그대로. 이미 저장된 기억도 보낼 때마다 조금씩 판정해요.', '따옴표 없는 대사 뒤 같은 줄 서술(서하: 응. 도윤은 웃었다.)에 이름표가 잘못 붙던 것 고침.']],
     ['1.0.14', '2026-10-22', ['따옴표 없는 대사(미나: 문장. 문장. 문장.)도 그 줄 끝까지 같은 사람으로 보고, 둘째 문장부터 이름표(미나:)를 붙여 넣어요. 다음 줄은 따로 봐요.']],
     ['1.0.13', '2026-10-22', ['메시지를 지우거나 고치거나 스와이프하면, 그 메시지에서 나온 약속 · 비밀은 숨기고 메인 모델에도 안 넣어요. 그 메시지가 지킨 약속은 다시 열려요. 되돌리면 그대로 돌아와요.', '메시지를 중간에 지워도 약속 · 비밀의 메시지 번호(#)가 지금 자리로 맞춰져요.']],
@@ -5548,7 +5619,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
