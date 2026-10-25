@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.17
+//@display-name 🏛️JevArchive 1.0.18
 //@api 3.0
-//@version 1.0.17
+//@version 1.0.18
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -1200,7 +1200,6 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
   //  (켜진 뒤의 위치 · 확률 · 데코레이터는 리스가 그대로 처리). 찾은 기억은 beforeRequest에서 그대로 쓴다 (Jev 두 번 안 부름)
   //  표시는 화면(display) · 메인 모델(beforeRequest) · 우리 기억(rawTimeline)에서 모두 뺀다
   function stripLoreMark(t) { return String(t ?? '').replace(/\s*(?:<|&lt;)jev-lore(?:>|&gt;)[\s\S]*?(?:<|&lt;)\/jev-lore(?:>|&gt;)/g, ''); }
-  let pendingInput = null;   // { text, at, pv, keys }
   async function loreEntries() {
     try { return typeof R.getCurrentLorebookEntries === 'function' ? ((await R.getCurrentLorebookEntries()) ?? []) : []; } catch { return []; }
   }
@@ -1233,37 +1232,53 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
     }
     return [...new Set(out)].slice(0, 20);
   }
-  /** 보낼 때 (리스 'input'): 로어북이 있을 때만 기억을 미리 찾고 트리거 글자를 붙인다. 로어북이 없으면 아무것도 안 해서 기다림도 없다 */
+  /** 보낼 때 (리스 'input'): 바로 끝내야 한다. 리스(PocketRisu 포함)는 input 처리 전에 메시지 목록을 잡아 두었다가 끝나면 통째로 되돌려 써서,
+   *  여기서 오래 기다리면(예전엔 Jev로 기억을 미리 찾았다) 그사이 생긴 답장 자리가 지워져 "message[n] is undefined" 오류가 났다.
+   *  그래서 네트워크 없이 이 기기 안에서만: 바로 전 답장에 넣은 기억 + 내 말과 낱말이 겹치는 기억 + 지금 최신 + 내 말에 나온 마디에서 번진 마디로 트리거를 찾는다.
+   *  기억 찾기 자체는 예전처럼 보내기 직전(beforeRequest)에 한다 (기억 · Jev 호출은 그대로) */
+  let loreKeysForNext = null;
   async function loreInputHandler(text) {
     try {
       const t = String(text ?? '');
-      if (!t.trim() || settings.loreTrig === false || !ready() || busy) return text;
+      if (!t.trim() || settings.loreTrig === false || !ready() || !chatKey) return text;
       const entries = await loreEntries();
-      if (!entries.some(e => e && !e.alwaysActive && e.key)) { pendingInput = null; return text; }
-      if (!await ensureChat()) return text;
-      await refreshChat();
+      if (!entries.some(e => e && !e.alwaysActive && e.key)) { loreKeysForNext = null; return text; }
       const clean = stripLoreMark(t);
-      const pv = await previewRecall(clean);
-      const keys = pv.block ? loreHits(pv.block, entries, characterCache.fullWord) : [];
-      // 번진 마디도 (설정 loreSpread, 가장 밝은 loreSpreadN개): 기억 글에 안 들어갔어도 그 이름으로 로어북 키를 찾는다
-      if (settings.loreSpread !== false) { const sp = (pv.graph?.spread ?? []).slice(0, settings.loreSpreadN ?? 4); if (sp.length) for (const k of loreHits(sp.join(' \n '), entries, characterCache.fullWord)) if (!keys.includes(k)) keys.push(k); }
-      pendingInput = { text: memText(clean).trim(), at: Date.now(), pv, keys };
-      return keys.length ? `${clean}\n<jev-lore> ${keys.join(' ')} </jev-lore>` : clean;
+      const keys = loreHits(quickLoreText(clean), entries, characterCache.fullWord);
+      // 번진 마디도 (설정 loreSpread, 가장 밝은 loreSpreadN개)
+      if (settings.loreSpread !== false) { const sp = quickSpread(clean, settings.loreSpreadN ?? 4); if (sp.length) for (const k of loreHits(sp.join(' \n '), entries, characterCache.fullWord)) if (!keys.includes(k)) keys.push(k); }
+      const ks = keys.slice(0, 20);
+      loreKeysForNext = ks;
+      return ks.length ? `${clean}\n<jev-lore> ${ks.join(' ')} </jev-lore>` : clean;
     } catch (error) { setError('기억으로 로어북 켜기', error); return text; }
+  }
+  /** 트리거를 찾을 글 (이 기기 안에서만, 바로): 바로 전 답장에 넣은 기억 + 내 말과 낱말이 겹치는 기억 + 지금 최신 */
+  function quickLoreText(latest) {
+    const limit = timeline.length;   // 보낼 말은 아직 채팅에 없다
+    const out = [];
+    if (lastRecall?.block) out.push(lastRecall.block);
+    try { for (const f of retrieveBooks([], latest, new Set(), 6, 24, limit, false, [])) out.push(withSpeaker(f.mi, f.sent)); } catch { }
+    try { out.push(...nowLines(limit, latest)); } catch { }
+    return out.join('\n');
+  }
+  /** 번진 마디 (바로): 내 말에 글자로 나온 마디에서 이웃으로 번진 것, 밝은 순. 모자라면 바로 전 답장 때 번진 마디 */
+  function quickSpread(latest, n) {
+    if (settings.graph === false || !facts.length) return [];
+    const g = buildGraph();
+    const act = new Map();
+    for (const node of g.nodes.values()) {
+      if (!latest.includes(node.label) || nodeIsCommon(node, g)) continue;
+      const nb = g.edges.get(node.label) ?? new Map();
+      const maxw = Math.max(1, ...nb.values());
+      for (const [w, c] of nb) if (!latest.includes(w)) act.set(w, Math.max(act.get(w) ?? 0, c / maxw));
+    }
+    for (const w of lastRecall?.graph?.spread ?? []) if (!act.has(w) && !latest.includes(w)) act.set(w, 0.001);
+    return [...act].sort((a, b) => b[1] - a[1]).slice(0, n).map(([w]) => w);
   }
   /** 화면: 표시를 가린다 */
   function loreDisplayHandler(text) { return typeof text === 'string' && /jev-lore/.test(text) ? stripLoreMark(text) : text; }
-  /** beforeRequest: 보낼 때 미리 찾은 기억이 이번 메시지 것이면 그대로 (지금 창보다 뒤 번호 줄만 뺀다) */
-  function reusePending(entries) {
-    const pi = pendingInput;
-    pendingInput = null;
-    const last = entries[entries.length - 1];
-    if (!pi?.pv?.raw || last?.role !== 'user' || Date.now() - pi.at > 5 * 60 * 1000 || memText(last.text).trim() !== pi.text) return null;
-    const limitNow = timeline.length - entries.length;
-    const r = pi.pv.raw;
-    const block = r.block ? r.block.split('\n').filter(l => { const m = /^#(\d+) /.exec(l); return !m || Number(m[1]) - 1 < limitNow; }).join('\n') : r.block;
-    return { ...r, block, picked: r.picked.filter(p => p.mi < limitNow), trace: { ...r.trace, lore: pi.keys, early: true } };
-  }
+  /** beforeRequest 뒤: 이번 메시지에 붙인 트리거 (화면 "로어북 켬" 표시용) */
+  function takeLoreKeys() { const k = loreKeysForNext; loreKeysForNext = null; return k; }
 
   // ══════════════════════════════════════════════════════════════════════
   //  이야기 층: 인물 · 관계 · 약속 · 이야기 시간 · 고정
@@ -3290,10 +3305,10 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       const head = timeline[timeline.length - entries.length]?.key ?? null;
       if (head !== windowHead) { windowHead = head; try { void Promise.resolve(localStore?.setItem(WINHEAD_KEY(chatKey), head)).catch(() => {}); } catch { } }
       // 기억(칸 줄)은 보낸 뒤 뒤에서 만든다. 여기서는 찾아 넣기만
-      const r = reusePending(entries) ?? await recall(entries, tr);
+      const r = await recall(entries, tr);
       const tokens = r.block ? estimateTokens(r.block) : 0;
       tr.note = `넣은 기억 ~${tokens}토큰`;
-      lastRecall = { at: Date.now(), tokens, block: r.block, ...r.trace, picked: r.picked.length, window: entries.length };
+      lastRecall = { at: Date.now(), tokens, block: r.block, ...r.trace, picked: r.picked.length, window: entries.length, lore: takeLoreKeys() };
       return inject(messages, r.block);
     } catch (error) {
       setError('요청 처리', error);
@@ -3806,6 +3821,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.18', '2026-10-25', ['기억으로 로어북 켜기를 보낼 때 바로 끝나게 바꿨어요. 1.0.17은 보낼 때 Jev로 기억을 미리 찾느라 1초쯤 걸렸는데, 그사이 리스(PocketRisu 포함)가 메시지 목록을 되돌려 쓰면서 스트리밍 답장 자리가 지워져 "message[n] is undefined" 오류가 났어요. 이제 이 기기 안에서만(바로 전 답장 기억 · 낱말 겹치는 기억 · 지금 최신 · 번진 마디) 트리거를 찾고, 기억 찾기는 예전처럼 보내기 직전에 해요.']],
     ['1.0.17', '2026-10-25', ['기억으로 로어북 켜기 (기본 켬): 리스 로어북은 채팅 메시지에서만 트리거를 찾아서 우리 기억으로는 안 켜졌어요. 이제 보낼 때 기억을 미리 찾고, 그 기억에 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여서 리스가 로어북을 켜요. 켜진 뒤 위치 · 확률 · 데코레이터는 리스가 그대로. 숨김 표시는 화면 · 메인 모델에서 빼요. 기억 찾기는 한 번만 (Jev 호출 그대로). 로어북 없는 봇은 전과 똑같아요.', '번진 마디도 로어북 켜기 (기본 켬, 4개): 기억 마디에서 불이 번져 켜진 마디 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요 (장소가 켜지면 그 장소의 인물도). 설정에서 개수 · 끄기.']],
     ['1.0.16', '2026-10-24', ['기억에 누가 한 말인지 더 붙여요: 인물 목록에 아직 없는 이름표(레아: …)도 그 이름, 서술 뒤에 오는 대사(카엘은 어깨를 두드렸다. "…")는 앞 문장 주어, 대사 뒤 "~가 속삭였다 · 말했다"면 그 사람, 내 메시지의 말은 내 이름. 확실하지 않으면 안 붙여요.']],
     ['1.0.15', '2026-10-22', ['최신 정보로 바꾸기 (기본 켬): 새 기억이 생기면 비슷한 옛 기억을 찾아 Jev가 "새 것이 옛 것을 대체하나"만 판정해요. 코인 128 → 900, 레벨, 무기, 이사, 머리색처럼 바뀐 값은 옛 기억 대신 최신 기억을 넣고, 바뀐 값들은 Latest state 한 줄로 늘 알려 줘요. 과거를 물으면(예전엔 · 원래 · 처음) 옛 기억도 그대로. 이미 저장된 기억도 보낼 때마다 조금씩 판정해요.', '따옴표 없는 대사 뒤 같은 줄 서술(서하: 응. 도윤은 웃었다.)에 이름표가 잘못 붙던 것 고침.']],
@@ -4906,7 +4922,7 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
-        <div class="field inline"><div><label>기억으로 로어북 켜기</label><div class="help">리스 로어북은 채팅 메시지에서만 트리거를 찾아서, 우리가 넣는 기억으로는 안 켜져요. 이걸 켜면 보낼 때 기억을 미리 찾고, 그 기억에 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여서 리스가 로어북을 켜게 해요 (켜진 뒤 위치 · 확률 같은 건 리스가 그대로). 표시는 화면과 메인 모델에서 빼요. 로어북이 있는 봇에서만 보낼 때 1초쯤 먼저 기억을 찾아요.</div></div>${sw('loreTrig', d.loreTrig !== false)}</div>
+        <div class="field inline"><div><label>기억으로 로어북 켜기</label><div class="help">리스 로어북은 채팅 메시지에서만 트리거를 찾아서, 우리가 넣는 기억으로는 안 켜져요. 이걸 켜면 보낼 때 이 기기 안에서 바로(네트워크 없이) 관련 기억을 훑어서, 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여 리스가 로어북을 켜게 해요 (켜진 뒤 위치 · 확률 같은 건 리스가 그대로). 표시는 화면과 메인 모델에서 빼요. 기억 찾기 · Jev 호출은 예전 그대로예요.</div></div>${sw('loreTrig', d.loreTrig !== false)}</div>
         <div class="field inline" style="padding-left:14px"><div><label>└ 번진 마디도 로어북 켜기</label><div class="help">기억 마디에서 불이 번져 켜진 마디(장소 → 그 장소의 인물 …) 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요. 기억 글에 안 들어간 이름이라도요. 많을수록 로어북이 더 켜져서 토큰이 늘어요.</div></div><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" inputmode="numeric" min="1" max="10" data-field="loreSpreadN" value="${escapeHtml(d.loreSpreadN ?? 4)}" style="width:56px;text-align:center;padding:6px" aria-label="번진 마디 개수">${sw('loreSpread', d.loreSpread !== false)}</div></div>
         <div class="field inline"><div><label>최신 정보로 바꾸기</label><div class="help">새 기억이 생기면 비슷한 옛 기억을 찾아 Jev가 "새 것이 옛 것을 대체하나"만 판정해요 (코인 128 → 900, 레벨, 무기, 이사, 머리색 …). 옛 기억 대신 최신 기억을 넣고, 바뀐 값은 "Latest state" 한 줄로 늘 알려 줘요. "예전엔 얼마였지?"처럼 과거를 물으면 옛 기억도 그대로 꺼내요.</div></div>${sw('latest', d.latest !== false)}</div>
         <div class="field inline"><div><label>놓친 기억 줍기</label><div class="help">Jev가 "필요 없음"으로 자른 기억 중, 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요. 임베딩이 Voyage일 때만 돼요 (리랭커 비용은 아주 작아요).</div></div>${/voyageai\.com/.test(embedConfig(d).endpoint ?? '') ? sw('rescue', d.rescue) : '<span class="dim xs">Voyage 임베딩일 때만</span>'}</div>
@@ -5709,7 +5725,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, quickSpread, quickLoreText, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
