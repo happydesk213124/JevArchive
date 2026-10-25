@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.16
+//@display-name 🏛️JevArchive 1.0.17
 //@api 3.0
-//@version 1.0.16
+//@version 1.0.17
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -88,7 +88,7 @@
     jevPreset: 'openrouter', jevKey: '', jevEndpoint: '', jevModel: '',
     embedPreset: 'openrouter', embedKey: '', embedEndpoint: '', embedModel: '',
     budget: 600, candidates: 16, neighbor: 1, tailTokens: 120, indexPerSend: 100,
-    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true, busySpin: true, rescue: true, latest: true, keepLevel: 1.3,
+    story: true, cards: false, director: false, intim: false, memForm: 'sentence', jevPrice: 0.042, jevParallel: 2, sceneChars: 6000, tags: true, overview: true, graph: true, skipStatus: true, busySpin: true, rescue: true, latest: true, loreTrig: true, loreSpread: true, loreSpreadN: 4, keepLevel: 1.3,
     dirCards: true, dirAuto: true, dirFreq: 'normal', dirPacks: ['basic', 'romance', 'daily', 'mystery', 'fantasy', 'horror', 'custom'], dirOff: [], dirCustom: [], dirUserPacks: [],
     injectMode: 'last_user', note: DEFAULT_NOTE, showButton: true,
   };
@@ -205,6 +205,9 @@
       busySpin: s.busySpin !== false,
       rescue: s.rescue !== false,
       latest: s.latest !== false,
+      loreTrig: s.loreTrig !== false,
+      loreSpread: s.loreSpread !== false,
+      loreSpreadN: Math.max(1, Math.min(10, Math.round(Number(s.loreSpreadN) || 4))),
       keepLevel: Number.isFinite(Number(s.keepLevel)) ? Math.min(2.5, Math.max(0.5, Number(s.keepLevel))) : 1.3,
       sceneChars: clampNum(s.sceneChars, 6000, 1000, 30000),
       memPreset: ['light', 'balanced', 'rich', 'max', 'custom'].includes(s.memPreset) ? s.memPreset : null,
@@ -580,7 +583,7 @@
     const fm = Number(chat.fmIndex ?? -1);
     const greet0 = fm >= 0 && characterCache.alternateGreetings?.[fm] != null ? characterCache.alternateGreetings[fm] : characterCache.firstMessage;
     const greet = greetOverride && greetOverride.raw === String(greet0 ?? '') ? greetOverride.text : greet0;
-    const push = (role, raw) => { const text = resolveNames(raw); if (text.trim()) out.push({ role, text, key: msgKey(role, text), loose: looseKey(role, text) }); };
+    const push = (role, raw) => { const text = resolveNames(stripLoreMark(raw)); if (text.trim()) out.push({ role, text, key: msgKey(role, text), loose: looseKey(role, text) }); };
     if (greet && String(greet).trim()) push('assistant', greet);
     for (const m of chat.message) push(m?.role === 'user' ? 'user' : 'assistant', String(m?.data ?? ''));
     return out;
@@ -599,6 +602,7 @@
       characterCache.name = character?.name ?? '';
       characterCache.firstMessage = character?.firstMessage ?? '';
       characterCache.alternateGreetings = character?.alternateGreetings ?? [];
+      characterCache.fullWord = !!character?.loreSettings?.fullWordMatching;
     }
     let chat = null;
     try { chat = await R.getChatFromIndex(charIndex, chatIndex); } catch { }
@@ -976,7 +980,7 @@ let lastRescue = null;
       const r = await recall(entries, tr, timeline.length - n);
       const tokens = r.block ? estimateTokens(r.block) : 0;
       tr.note = `미리 보기 ~${tokens}토큰`;
-      return { at: Date.now(), tokens, block: r.block, ...r.trace, picked: r.picked.length, window: entries.length, tail: n };
+      return { at: Date.now(), tokens, block: r.block, ...r.trace, picked: r.picked.length, window: entries.length, tail: n, raw: r };
     } finally { endTrace(tr); }
   }
 
@@ -1188,6 +1192,77 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
         levels: [...levels].map(([id, lv]) => ({ id, lv: Math.round(lv * 100) / 100, text: clip(facts[id]?.sent ?? '', 140), mi: (facts[id]?.mi ?? 0) + 1 })).sort((a, b) => b.lv - a.lv),
       },
     };
+  }
+
+  // ══ 기억으로 로어북 켜기 (설정 loreTrig, 기본 켬) ══
+  //  리스는 "채팅 메시지"에서만 로어북 트리거를 찾고, 우리 기억은 그 뒤(beforeRequest)에 들어가서 로어북을 못 켠다.
+  //  그래서 보낼 때(input) 기억을 미리 찾고, 그 기억 글에 걸리는 트리거 글자만 내 메시지 끝에 <jev-lore> … </jev-lore>로 붙인다 → 리스가 그 메시지에서 로어북을 켠다
+  //  (켜진 뒤의 위치 · 확률 · 데코레이터는 리스가 그대로 처리). 찾은 기억은 beforeRequest에서 그대로 쓴다 (Jev 두 번 안 부름)
+  //  표시는 화면(display) · 메인 모델(beforeRequest) · 우리 기억(rawTimeline)에서 모두 뺀다
+  function stripLoreMark(t) { return String(t ?? '').replace(/\s*(?:<|&lt;)jev-lore(?:>|&gt;)[\s\S]*?(?:<|&lt;)\/jev-lore(?:>|&gt;)/g, ''); }
+  let pendingInput = null;   // { text, at, pv, keys }
+  async function loreEntries() {
+    try { return typeof R.getCurrentLorebookEntries === 'function' ? ((await R.getCurrentLorebookEntries()) ?? []) : []; } catch { return []; }
+  }
+  /** 리스 규칙 그대로 (lorebook.svelte.ts searchMatch): 쉼표 키 중 하나, 대소문자 · 띄어쓰기 무시 (낱말 단위 맞춤이면 띄어쓰기로 나눈 낱말), 정규식 키는 /…/ 그대로, 선택적이면 두 번째 키도.
+   *  걸린 글자를 돌려준다 (정규식이면 실제로 맞은 부분) */
+  function loreHits(text, entries, fullWord = false) {
+    const raw = String(text ?? ''), low = raw.toLocaleLowerCase(), noSp = low.replace(/ /g, ''), words = low.split(' ');
+    const hit = (keys, regex) => {
+      const ks = String(keys ?? '').split(',').map(k => k.trim()).filter(Boolean);
+      if (regex) {
+        for (const k of ks) {
+          const m = /^\/([\s\S]*)\/([dgimsuvy]*)$/.exec(k);
+          if (!m) return null;
+          try { const x = new RegExp(m[1], m[2].replace('g', '')).exec(raw); if (x?.[0]) return x[0]; } catch { return null; }
+        }
+        return null;
+      }
+      for (const k of ks) { const kl = k.toLocaleLowerCase(); if (fullWord ? words.includes(kl) : noSp.includes(kl.replace(/ /g, ''))) return k; }
+      return null;
+    };
+    const out = [];
+    for (const e of entries ?? []) {
+      if (!e || e.alwaysActive || !e.key) continue;
+      const a = hit(e.key, e.useRegex);
+      if (!a) continue;
+      let b = null;
+      if (e.selective && e.secondkey) { b = hit(e.secondkey, e.useRegex); if (!b) continue; }
+      out.push(a);
+      if (b) out.push(b);
+    }
+    return [...new Set(out)].slice(0, 20);
+  }
+  /** 보낼 때 (리스 'input'): 로어북이 있을 때만 기억을 미리 찾고 트리거 글자를 붙인다. 로어북이 없으면 아무것도 안 해서 기다림도 없다 */
+  async function loreInputHandler(text) {
+    try {
+      const t = String(text ?? '');
+      if (!t.trim() || settings.loreTrig === false || !ready() || busy) return text;
+      const entries = await loreEntries();
+      if (!entries.some(e => e && !e.alwaysActive && e.key)) { pendingInput = null; return text; }
+      if (!await ensureChat()) return text;
+      await refreshChat();
+      const clean = stripLoreMark(t);
+      const pv = await previewRecall(clean);
+      const keys = pv.block ? loreHits(pv.block, entries, characterCache.fullWord) : [];
+      // 번진 마디도 (설정 loreSpread, 가장 밝은 loreSpreadN개): 기억 글에 안 들어갔어도 그 이름으로 로어북 키를 찾는다
+      if (settings.loreSpread !== false) { const sp = (pv.graph?.spread ?? []).slice(0, settings.loreSpreadN ?? 4); if (sp.length) for (const k of loreHits(sp.join(' \n '), entries, characterCache.fullWord)) if (!keys.includes(k)) keys.push(k); }
+      pendingInput = { text: memText(clean).trim(), at: Date.now(), pv, keys };
+      return keys.length ? `${clean}\n<jev-lore> ${keys.join(' ')} </jev-lore>` : clean;
+    } catch (error) { setError('기억으로 로어북 켜기', error); return text; }
+  }
+  /** 화면: 표시를 가린다 */
+  function loreDisplayHandler(text) { return typeof text === 'string' && /jev-lore/.test(text) ? stripLoreMark(text) : text; }
+  /** beforeRequest: 보낼 때 미리 찾은 기억이 이번 메시지 것이면 그대로 (지금 창보다 뒤 번호 줄만 뺀다) */
+  function reusePending(entries) {
+    const pi = pendingInput;
+    pendingInput = null;
+    const last = entries[entries.length - 1];
+    if (!pi?.pv?.raw || last?.role !== 'user' || Date.now() - pi.at > 5 * 60 * 1000 || memText(last.text).trim() !== pi.text) return null;
+    const limitNow = timeline.length - entries.length;
+    const r = pi.pv.raw;
+    const block = r.block ? r.block.split('\n').filter(l => { const m = /^#(\d+) /.exec(l); return !m || Number(m[1]) - 1 < limitNow; }).join('\n') : r.block;
+    return { ...r, block, picked: r.picked.filter(p => p.mi < limitNow), trace: { ...r.trace, lore: pi.keys, early: true } };
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -3175,7 +3250,9 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       for (const id of n.sents) { const f = facts[id]; if (!f || f.mi >= limitMi || newest.get(f.sent) !== f.mi || exclude.has(id)) continue; score.set(id, (score.get(id) ?? 0) + a / damp); }
     }
     const picks = [...score].map(([id, s]) => [id, s * (0.5 + Math.min(3, worthOf(facts[id])) / 6) + facts[id].mi * 1e-6]).sort((a, b) => b[1] - a[1]).slice(0, EXP.gTake ?? 24).map(([id]) => facts[id]);
-    return { picks, info: { shortlist: list.length, seeds, lit: act.size } };
+    // 번진 마디 (직접 켠 것 말고 이웃으로 불이 번진 것), 밝은 순 — 로어북 켜기에 쓴다
+    const spread = [...act].filter(([w]) => !seeds.includes(w)).sort((a, b) => b[1] - a[1]).map(([w]) => w).slice(0, 10);
+    return { picks, info: { shortlist: list.length, seeds, lit: act.size, spread } };
   }
 
   function inject(messages, block) {
@@ -3196,7 +3273,10 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
   // ══════════════════════════════════════════════════════════════════════
 
   async function beforeRequestHandler(messages, type) {
-    if ((type !== 'model' && type !== 'main') || busy) return messages;
+    if (type !== 'model' && type !== 'main') return messages;
+    // 기억으로 로어북 켜기 표시(<jev-lore>)는 메인 모델에게 안 보낸다
+    if (messages.some(m => typeof m?.content === 'string' && /jev-lore/.test(m.content))) messages = messages.map(m => (typeof m?.content === 'string' && /jev-lore/.test(m.content) ? { ...m, content: stripLoreMark(m.content) } : m));
+    if (busy) return messages;
     busy = true;
     let tr = null;
     try {
@@ -3210,7 +3290,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       const head = timeline[timeline.length - entries.length]?.key ?? null;
       if (head !== windowHead) { windowHead = head; try { void Promise.resolve(localStore?.setItem(WINHEAD_KEY(chatKey), head)).catch(() => {}); } catch { } }
       // 기억(칸 줄)은 보낸 뒤 뒤에서 만든다. 여기서는 찾아 넣기만
-      const r = await recall(entries, tr);
+      const r = reusePending(entries) ?? await recall(entries, tr);
       const tokens = r.block ? estimateTokens(r.block) : 0;
       tr.note = `넣은 기억 ~${tokens}토큰`;
       lastRecall = { at: Date.now(), tokens, block: r.block, ...r.trace, picked: r.picked.length, window: entries.length };
@@ -3726,6 +3806,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.17', '2026-10-25', ['기억으로 로어북 켜기 (기본 켬): 리스 로어북은 채팅 메시지에서만 트리거를 찾아서 우리 기억으로는 안 켜졌어요. 이제 보낼 때 기억을 미리 찾고, 그 기억에 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여서 리스가 로어북을 켜요. 켜진 뒤 위치 · 확률 · 데코레이터는 리스가 그대로. 숨김 표시는 화면 · 메인 모델에서 빼요. 기억 찾기는 한 번만 (Jev 호출 그대로). 로어북 없는 봇은 전과 똑같아요.', '번진 마디도 로어북 켜기 (기본 켬, 4개): 기억 마디에서 불이 번져 켜진 마디 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요 (장소가 켜지면 그 장소의 인물도). 설정에서 개수 · 끄기.']],
     ['1.0.16', '2026-10-24', ['기억에 누가 한 말인지 더 붙여요: 인물 목록에 아직 없는 이름표(레아: …)도 그 이름, 서술 뒤에 오는 대사(카엘은 어깨를 두드렸다. "…")는 앞 문장 주어, 대사 뒤 "~가 속삭였다 · 말했다"면 그 사람, 내 메시지의 말은 내 이름. 확실하지 않으면 안 붙여요.']],
     ['1.0.15', '2026-10-22', ['최신 정보로 바꾸기 (기본 켬): 새 기억이 생기면 비슷한 옛 기억을 찾아 Jev가 "새 것이 옛 것을 대체하나"만 판정해요. 코인 128 → 900, 레벨, 무기, 이사, 머리색처럼 바뀐 값은 옛 기억 대신 최신 기억을 넣고, 바뀐 값들은 Latest state 한 줄로 늘 알려 줘요. 과거를 물으면(예전엔 · 원래 · 처음) 옛 기억도 그대로. 이미 저장된 기억도 보낼 때마다 조금씩 판정해요.', '따옴표 없는 대사 뒤 같은 줄 서술(서하: 응. 도윤은 웃었다.)에 이름표가 잘못 붙던 것 고침.']],
     ['1.0.14', '2026-10-22', ['따옴표 없는 대사(미나: 문장. 문장. 문장.)도 그 줄 끝까지 같은 사람으로 보고, 둘째 문장부터 이름표(미나:)를 붙여 넣어요. 다음 줄은 따로 봐요.']],
@@ -3883,7 +3964,7 @@ details.more.danger summary{color:var(--tx2)}
   }
   /** "후보 N개 중 Jev가 M개를 골랐어요" 줄 */
   function recallBar(lr) {
-    return lr ? `<div class="bar">${lr.kept ? `후보 ${lr.cands}개 중 Jev가 ${lr.kept}개를 골랐어요` : lr.cands ? `후보 ${lr.cands}개 중 지금 꼭 필요한 건 없다고 봤어요 · 방금 흐름만 넣음` : '아직 찾을 옛날 대화가 없어요'}${lr.need && lr.need !== 'none' ? ` · 빠진 근거(${escapeHtml(lr.need)})로 한 번 더 찾음` : ''}${lr.jevOk === false ? ' · <span class="err">Jev 실패, 검색 순위로 대신</span>' : ''}</div>` : '';
+    return lr ? `<div class="bar">${lr.kept ? `후보 ${lr.cands}개 중 Jev가 ${lr.kept}개를 골랐어요` : lr.cands ? `후보 ${lr.cands}개 중 지금 꼭 필요한 건 없다고 봤어요 · 방금 흐름만 넣음` : '아직 찾을 옛날 대화가 없어요'}${lr.need && lr.need !== 'none' ? ` · 빠진 근거(${escapeHtml(lr.need)})로 한 번 더 찾음` : ''}${lr.jevOk === false ? ' · <span class="err">Jev 실패, 검색 순위로 대신</span>' : ''}${lr.lore?.length ? ` · 로어북 켬: ${escapeHtml(lr.lore.join(', '))}` : ''}</div>` : '';
   }
   /** 미리 보기 줄: 보낼 말을 적고 누르면(Enter), 채팅 끝 몇 개와 같이 기억을 찾아 아래 카드에 "(미리 보기)"로 보여 준다. 모델에는 안 보낸다 */
   function previewRow() {
@@ -4825,6 +4906,8 @@ details.more.danger summary{color:var(--tx2)}
       </section>
       <section class="card"><div class="ch"><h2>앱</h2></div>
         <div class="field inline"><div><label>채팅 화면 바로가기</label><div class="help">채팅 화면에 버튼을 띄워요.</div></div>${sw('showButton', d.showButton)}</div>
+        <div class="field inline"><div><label>기억으로 로어북 켜기</label><div class="help">리스 로어북은 채팅 메시지에서만 트리거를 찾아서, 우리가 넣는 기억으로는 안 켜져요. 이걸 켜면 보낼 때 기억을 미리 찾고, 그 기억에 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여서 리스가 로어북을 켜게 해요 (켜진 뒤 위치 · 확률 같은 건 리스가 그대로). 표시는 화면과 메인 모델에서 빼요. 로어북이 있는 봇에서만 보낼 때 1초쯤 먼저 기억을 찾아요.</div></div>${sw('loreTrig', d.loreTrig !== false)}</div>
+        <div class="field inline" style="padding-left:14px"><div><label>└ 번진 마디도 로어북 켜기</label><div class="help">기억 마디에서 불이 번져 켜진 마디(장소 → 그 장소의 인물 …) 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요. 기억 글에 안 들어간 이름이라도요. 많을수록 로어북이 더 켜져서 토큰이 늘어요.</div></div><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" inputmode="numeric" min="1" max="10" data-field="loreSpreadN" value="${escapeHtml(d.loreSpreadN ?? 4)}" style="width:56px;text-align:center;padding:6px" aria-label="번진 마디 개수">${sw('loreSpread', d.loreSpread !== false)}</div></div>
         <div class="field inline"><div><label>최신 정보로 바꾸기</label><div class="help">새 기억이 생기면 비슷한 옛 기억을 찾아 Jev가 "새 것이 옛 것을 대체하나"만 판정해요 (코인 128 → 900, 레벨, 무기, 이사, 머리색 …). 옛 기억 대신 최신 기억을 넣고, 바뀐 값은 "Latest state" 한 줄로 늘 알려 줘요. "예전엔 얼마였지?"처럼 과거를 물으면 옛 기억도 그대로 꺼내요.</div></div>${sw('latest', d.latest !== false)}</div>
         <div class="field inline"><div><label>놓친 기억 줍기</label><div class="help">Jev가 "필요 없음"으로 자른 기억 중, 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요. 임베딩이 Voyage일 때만 돼요 (리랭커 비용은 아주 작아요).</div></div>${/voyageai\.com/.test(embedConfig(d).endpoint ?? '') ? sw('rescue', d.rescue) : '<span class="dim xs">Voyage 임베딩일 때만</span>'}</div>
         <div class="field inline"><div><label>작업 중 동그라미</label><div class="help">뒤에서 일하는 동안 채팅 화면 오른쪽 위에 도는 동그라미를 띄워요. <b style="color:#ef4444">빨강</b> 기억 저장 · <b style="color:#a855f7">보라</b> 이야기 정리 · <b style="color:#22c55e">초록</b> 마디 채우기. 누르면 이 화면이 열려요.</div></div>${sw('busySpin', d.busySpin)}</div>
@@ -5599,11 +5682,18 @@ details.more.danger summary{color:var(--tx2)}
   }
   await R.addRisuReplacer('beforeRequest', beforeRequestHandler);
   await R.addRisuReplacer('afterRequest', afterRequestHandler);
+  // 기억으로 로어북 켜기: 보낼 때 트리거 글자 붙이기 + 화면에서 가리기 (옛 Risu면 건너뜀)
+  if (R.addRisuScriptHandler) {
+    try { await R.addRisuScriptHandler('input', loreInputHandler); await R.addRisuScriptHandler('display', loreDisplayHandler); }
+    catch (error) { console.error(LOG, '스크립트 처리 등록 실패', error); }
+  }
   if (R.onUnload) {
     await R.onUnload(async () => {
       await Promise.allSettled([
         R.removeRisuReplacer('beforeRequest', beforeRequestHandler),
         R.removeRisuReplacer('afterRequest', afterRequestHandler),
+        R.removeRisuScriptHandler ? R.removeRisuScriptHandler('input', loreInputHandler) : null,
+        R.removeRisuScriptHandler ? R.removeRisuScriptHandler('display', loreDisplayHandler) : null,
         buttonPartId && R.unregisterUIPart ? R.unregisterUIPart(buttonPartId) : null,
         flushVectors(), flushStory(), flushCards(), flushFacts(), flushUsage(),
       ]);
@@ -5619,7 +5709,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
