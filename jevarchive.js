@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.18
+//@display-name 🏛️JevArchive 1.0.19
 //@api 3.0
-//@version 1.0.18
+//@version 1.0.19
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -2155,10 +2155,77 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
   }
   function markNotSame(a, b) { (story.notSame ??= []).push([a, b].sort().join('|')); saveStory(); }
 
+  /** 합친 것 되돌리기 (인물 시트의 다른 이름 칩 ×).
+   *  합칠 때 적어 둔 기록이 있으면: 그 인물을 되살리고, 옮겨 간 관계 · 약속 · 태그를 다시 떼어 낸다. 둘은 "다른 사람"으로 표시해 같은 사람 제안이 다시 안 뜨게.
+   *  기록이 없으면(예전 버전에서 합쳤거나 손으로 넣은 별명): 이름만 뗀다. 합쳐서 생긴 이름이면 따로 인물로 다시 세운다 (앞으로 그 이름이 나오는 기억은 그 사람으로) */
+  function splitAlias(owner, name) {
+    const b = story.people[owner];
+    if (!b || !b.aliases.includes(name)) return null;
+    const merges = story.merges ?? [];
+    let ri = -1;
+    for (let i = merges.length - 1; i >= 0; i--) if (merges[i].into === owner && (merges[i].from === name || merges[i].added?.includes(name))) { ri = i; break; }
+    if (ri < 0) {
+      b.aliases = b.aliases.filter(n => n !== name);
+      const manual = (story.manualAliases ?? []).includes(`${owner}|${name}`);
+      if (!manual && !story.people[name]) story.people[name] = { name, kind: 'npc', aliases: [], count: 0, first: null, last: null };
+      story.manualAliases = (story.manualAliases ?? []).filter(x => x !== `${owner}|${name}`);
+      markNotSame(name, owner);
+      return { full: false, from: name };
+    }
+    const r = merges.splice(ri, 1)[0];
+    const from = r.from;
+    const clamp = (x) => Math.max(-10, Math.min(10, x));
+    // ① 인물: 되살리고, 합칠 때 붙은 이름 · 등장 횟수를 뗀다
+    b.aliases = b.aliases.filter(n => !r.added.includes(n));
+    b.count = Math.max(0, (b.count ?? 0) - (r.person.count ?? 0));
+    if (r.intoFirst !== undefined) b.first = r.intoFirst;
+    story.people[from] = { ...r.person, aliases: [...(r.person.aliases ?? [])] };
+    // ② 관계: 그 사람 관계를 되살리고, 합쳐진 쪽에 더해졌던 만큼 뺀다
+    for (const [k, p0] of Object.entries(r.pairs ?? {})) {
+      if (p0.a !== from && p0.b !== from) continue;
+      story.pairs[k] = p0;
+      const other = p0.a === from ? p0.b : p0.a;
+      if (other === owner) continue;
+      const kq = pairKey(owner, other), q = story.pairs[kq];
+      if (!q) continue;
+      const before = r.pairs[kq];
+      if (!before) { delete story.pairs[kq]; continue; }   // 합치기 전에 없던 관계면 통째로 그 사람 것
+      q.co = Math.max(0, q.co - p0.co);
+      q.aff = clamp(q.aff - p0.aff);
+      q.events = q.events.filter(e => !p0.events.some(x => x.mi === e.mi && x.ck === e.ck));
+      if (p0.intim) { if (before.intim) q.intim = before.intim; else delete q.intim; }
+    }
+    // ③ 약속 · 비밀: 그 사람 것이던 것은 다시 그 사람으로
+    for (const rt of r.threads ?? []) {
+      const t = story.threads.find(x => x.id === rt.id);
+      if (!t) continue;
+      if (rt.who && t.who === owner) t.who = from;
+      if (rt.to && t.to === owner) t.to = from;
+    }
+    // ④ 태그: 되살리고, 합쳐진 쪽에서 뺀다
+    if (r.tags) {
+      (story.tags ??= {})[from] = r.tags;
+      const dst = story.tags[owner];
+      if (dst) for (const [w, t] of Object.entries(r.tags)) { const d = dst[w]; if (!d) continue; d.s = Math.max(-9, Math.min(9, d.s - t.s)); d.n -= t.n; if (d.n <= 0) delete dst[w]; }
+    }
+    markNotSame(from, owner);
+    return { full: true, from };
+  }
+
   // ── 사람이 직접 고치기 ──
   function mergePeople(from, into) {
     if (from === into || !story.people[from] || !story.people[into]) return;
     const a = story.people[from], b = story.people[into];
+    // 되돌릴 수 있게 기록 (인물 시트의 다른 이름 칩 × → splitAlias)
+    const cl = (x) => (x == null ? x : JSON.parse(JSON.stringify(x)));
+    (story.merges ??= []).push({
+      from, into, at: Date.now(), person: cl(a), intoFirst: b.first ?? null,
+      added: [a.name, ...a.aliases].filter(n => n !== b.name && !b.aliases.includes(n)),
+      pairs: Object.fromEntries(Object.entries(story.pairs).filter(([, p]) => [p.a, p.b].some(n => n === from || n === into)).map(([k, p]) => [k, cl(p)])),
+      threads: story.threads.filter(t => t.who === from || t.to === from).map(t => ({ id: t.id, who: t.who === from, to: t.to === from })),
+      tags: cl(story.tags?.[from] ?? null),
+    });
+    if (story.merges.length > 60) story.merges.splice(0, story.merges.length - 60);
     b.aliases = [...new Set([...b.aliases, a.name, ...a.aliases])];
     b.count += a.count;
     b.first = Math.min(b.first ?? Infinity, a.first ?? Infinity);
@@ -3821,6 +3888,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.19', '2026-10-27', ['잘못 합친 인물 떼어 내기: 인물 시트의 "다른 이름" 칩에 ×가 생겼어요. 누르면 합칠 때 옮겨 간 관계 · 약속 · 비밀 · 태그 · 등장 횟수까지 원래대로 돌리고, 둘을 다른 사람으로 기억해서 같은 사람 제안이 다시 안 떠요 (예: "대장님"을 기병대장 · 보병대장이 같이 쓰는데 한쪽에 합쳐 버린 경우). 예전 버전에서 합친 건 기록이 없어서 이름만 떼고, 앞으로 나오는 기억부터 따로 봐요.']],
     ['1.0.18', '2026-10-25', ['기억으로 로어북 켜기를 보낼 때 바로 끝나게 바꿨어요. 1.0.17은 보낼 때 Jev로 기억을 미리 찾느라 1초쯤 걸렸는데, 그사이 리스(PocketRisu 포함)가 메시지 목록을 되돌려 쓰면서 스트리밍 답장 자리가 지워져 "message[n] is undefined" 오류가 났어요. 이제 이 기기 안에서만(바로 전 답장 기억 · 낱말 겹치는 기억 · 지금 최신 · 번진 마디) 트리거를 찾고, 기억 찾기는 예전처럼 보내기 직전에 해요.']],
     ['1.0.17', '2026-10-25', ['기억으로 로어북 켜기 (기본 켬): 리스 로어북은 채팅 메시지에서만 트리거를 찾아서 우리 기억으로는 안 켜졌어요. 이제 보낼 때 기억을 미리 찾고, 그 기억에 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여서 리스가 로어북을 켜요. 켜진 뒤 위치 · 확률 · 데코레이터는 리스가 그대로. 숨김 표시는 화면 · 메인 모델에서 빼요. 기억 찾기는 한 번만 (Jev 호출 그대로). 로어북 없는 봇은 전과 똑같아요.', '번진 마디도 로어북 켜기 (기본 켬, 4개): 기억 마디에서 불이 번져 켜진 마디 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요 (장소가 켜지면 그 장소의 인물도). 설정에서 개수 · 끄기.']],
     ['1.0.16', '2026-10-24', ['기억에 누가 한 말인지 더 붙여요: 인물 목록에 아직 없는 이름표(레아: …)도 그 이름, 서술 뒤에 오는 대사(카엘은 어깨를 두드렸다. "…")는 앞 문장 주어, 대사 뒤 "~가 속삭였다 · 말했다"면 그 사람, 내 메시지의 말은 내 이름. 확실하지 않으면 안 붙여요.']],
@@ -4773,7 +4841,7 @@ details.more.danger summary{color:var(--tx2)}
     for (let i = facts.length - 1; i >= 0 && acts.length < 8; i--) if ([0, 1, 2].some(j => forms.some(n => facts[i].slots[j]?.includes(n)))) acts.push(facts[i]);
     const others = personList().filter(x => x.name !== name && !x.hidden);
     const titleWarn = isTitleName(name) ? `<div class="titlewarn"><div>「${escapeHtml(name)}」${hasBatchim(name) ? '은' : '는'} 호칭이라 누군지 확실하지 않아요. 여러 사람을 이렇게 불렀으면 <b>숨기기</b>, 한 사람이면 그 사람과 <b>합치기</b>.</div><div class="row" style="gap:6px"><button class="btn sm d" data-act="hide-person" data-name="${escapeHtml(name)}">숨기기</button>${others.length ? `<select class="sel" id="merge-in" style="flex:1;min-width:120px"><option value="">합칠 사람…</option>${others.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}</option>`).join('')}</select><button class="btn sm" data-act="merge" data-name="${escapeHtml(name)}">합치기</button>` : ''}</div></div>` : '';
-    return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${pname(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="hint">${p.aliases.map(a => `<span class="chip">${escapeHtml(a)}</span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
+    return `<div class="sh">${avatar(name, 'lg')}<div class="t"><h3>${pname(name)}</h3><div class="small muted">${p.kind === 'char' ? '캐릭터 · ' : p.kind === 'persona' ? '나 · ' : ''}${p.count}번 등장${p.first != null ? ` · 처음 #${p.first + 1} · 최근 #${(p.last ?? p.first) + 1}` : ''}</div>${p.aliases.length ? `<div class="tagchips" style="margin-top:6px">${p.aliases.map(a => `<span class="tchip"><span style="padding:3px 4px 3px 10px">${escapeHtml(a)}</span><button class="x" data-act="alias-split" data-name="${escapeHtml(name)}" data-a="${escapeHtml(a)}" aria-label="${escapeHtml(a)} 떼어 내기" title="떼어 내기 (잘못 합쳤으면)">×</button></span>`).join('')}</div>` : ''}</div><button class="iconbtn" data-act="sheet-close" aria-label="닫기">${icon('close')}</button></div>
       ${titleWarn}
       ${(() => { const { all } = topTags(name, 0, 0); return settings.tags !== false && all.length ? `<div class="sec">태그 <span class="dim xs" style="font-weight:400">눌러서 원문 · × 로 지우기</span></div><div class="tagchips">${all.slice(0, 16).map(([w, t]) => `<span class="tchip ${t.s > 0 ? 'pos' : 'neg'}"><button data-act="chunk" data-ck="${escapeHtml(t.ck ?? '')}" title="${escapeHtml(t.q ?? '')}">${t.s > 0 ? '💚' : '💔'} ${escapeHtml(w)} <b>${Math.abs(t.s)}</b></button><button class="x" data-act="tag-del" data-name="${escapeHtml(name)}" data-w="${escapeHtml(w)}" aria-label="지우기">×</button></span>`).join('')}</div>` : ''; })()}
       <div class="sec">관계</div>
@@ -5253,6 +5321,15 @@ details.more.danger summary{color:var(--tx2)}
         render();
         return;
       }
+      case 'alias-split': {
+        const { name, a } = el.dataset;
+        if (!await confirmDialog(`"${a}"${hasBatchim(a) ? '을' : '를'} ${name}에게서 떼어 낼까요?\n잘못 합쳤으면 합칠 때 옮겨 간 관계 · 약속 · 태그도 원래대로 돌려요. 둘은 다른 사람으로 기억해요.`)) return;
+        const r = splitAlias(name, a);
+        if (!r) { toast('이미 떼어졌어요.'); return; }
+        saveStory(); ui.layout = null; render();
+        toast(r.full ? `${josa(r.from, '을', '를')} 다시 따로 떼었어요 (관계 · 약속 · 태그까지).` : `"${a}"${hasBatchim(a) ? '을' : '를'} 떼었어요. 앞으로 나오는 기억부터 따로 봐요.`);
+        return;
+      }
       case 'tag-del': { const m = story.tags?.[el.dataset.name]; if (m) { delete m[el.dataset.w]; saveStory(); render(); toast(`태그 "${el.dataset.w}"를 지웠어요.`); } return; }
       case 'relmerge': { const { from, into } = el.dataset; if (await confirmDialog(`${josa(from, '을', '를')} ${josa(into, '과', '와')} 같은 사람으로 합칠까요?\n${josa(from, '은', '는')} ${into}의 다른 이름이 되고, 관계 · 횟수도 합쳐져요.`, '합치기')) { mergePeople(from, into); ui.sheet = { type: 'person', name: into }; ui.layout = null; render(); toast(`${josa(from, '을', '를')} 합쳤어요.`); } return; }
       case 'pstep': { const inp = document.getElementById('jev-par'); if (inp) { inp.value = String(Math.max(1, Math.min(10, (Number(inp.value) || 2) + Number(el.dataset.d)))); scheduleSettingsSave(400); if (ui.onboard) ui.onboard.d = readForm(ui.onboard.d); } return; }
@@ -5270,7 +5347,7 @@ details.more.danger summary{color:var(--tx2)}
       case 'search': await doSearch(); return;
       case 'intim': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { const r = p.intim ??= { n: 0, first: null, last: null, firstCk: null, lastCk: null, day: null }; r.n = Math.max(0, r.n + Number(el.dataset.d)); saveStory(); } render(); return; }
       case 'aff': { const p = pairOf(el.dataset.a, el.dataset.b); if (p) { p.aff = Math.max(-10, Math.min(10, p.aff + Number(el.dataset.d))); saveStory(); } render(); return; }
-      case 'alias': { const v = document.getElementById('alias-in')?.value?.trim(); const p = story.people[el.dataset.name]; if (v && p && !p.aliases.includes(v)) { p.aliases.push(v); saveStory(); toast(`"${v}"도 ${josa(p.name, '으로', '로')} 볼게요`); } render(); return; }
+      case 'alias': { const v = document.getElementById('alias-in')?.value?.trim(); const p = story.people[el.dataset.name]; if (v && p && !p.aliases.includes(v)) { p.aliases.push(v); (story.manualAliases ??= []).push(`${p.name}|${v}`); saveStory(); toast(`"${v}"도 ${josa(p.name, '으로', '로')} 볼게요`); } render(); return; }
       case 'merge': { const into = document.getElementById('merge-in')?.value; if (!into) { toast('합칠 인물을 고르세요'); return; } if (await confirmDialog(`${josa(el.dataset.name, '을', '를')} ${josa(into, '과', '와')} 같은 인물로 합칠까요?\n${josa(el.dataset.name, '은', '는')} ${into}의 다른 이름이 돼요.`, '합치기')) { mergePeople(el.dataset.name, into); ui.sheet = { type: 'person', name: into }; ui.layout = null; render(); } return; }
       case 'hide-person': if (await confirmDialog(`${josa(el.dataset.name, '을', '를')} 인물 목록에서 뺄까요?\n다시 인물로 잡지 않아요.`, '빼기', true)) { hidePerson(el.dataset.name); ui.sheet = null; ui.layout = null; render(); } return;
       case 'gzoom': { const f = Number(el.dataset.f); const g = (ui[el.dataset.g || 'graph'] ??= { x: 0, y: 0, k: 1 }); const k2 = Math.max(0.4, Math.min(3, g.k * f)); const { W, H } = graphBox(); g.x = W / 2 - ((W / 2 - g.x) * k2) / g.k; g.y = H / 2 - ((H / 2 - g.y) * k2) / g.k; g.k = k2; document.querySelector('[data-pan]')?.setAttribute('transform', `translate(${g.x} ${g.y}) scale(${g.k})`); return; }
@@ -5725,7 +5802,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, quickSpread, quickLoreText, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, quickSpread, quickLoreText, splitAlias, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
