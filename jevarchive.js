@@ -1,7 +1,7 @@
 //@name jevarchive
-//@display-name 🏛️JevArchive 1.0.19
+//@display-name 🏛️JevArchive 1.0.20
 //@api 3.0
-//@version 1.0.19
+//@version 1.0.20
 //@update-url https://raw.githubusercontent.com/happydesk213124/JevArchive/main/jevarchive.js
 //@arg jev_api_key string (선택) Jev API 키. JevArchive 화면의 설정에서 넣어도 됩니다.
 
@@ -205,6 +205,10 @@
       busySpin: s.busySpin !== false,
       rescue: s.rescue !== false,
       latest: s.latest !== false,
+      pcards: s.pcards !== false,
+      items: s.items !== false,
+      reqRead: s.reqRead !== false,
+      cardTok: Math.max(0, Math.min(1500, Math.round(Number(s.cardTok ?? 320)) || 0)),
       loreTrig: s.loreTrig !== false,
       loreSpread: s.loreSpread !== false,
       loreSpreadN: Math.max(1, Math.min(10, Math.round(Number(s.loreSpreadN) || 4))),
@@ -882,6 +886,158 @@ let lastRescue = null;
     return [...new Set([characterCache.name, personaCache, ...peopleIn(text)].filter(n => n && story.people[n] && !story.people[n].hidden))];
   }
 
+  // ══ 요청에서 새로 들어온 글 · 인물 명함 · 물건 이력 (1.0.20) ══
+  //  Jev는 요약을 못 쓰니까 규칙과 원문으로 만든다. 메인 모델이 답장 중에 스스로 꺼낼 사람 · 물건을 미리 알려 주려고
+
+  // ── ① 요청에서 새로 들어온 글: 지난 요청과 비교해 이번에 새로 생긴 시스템 쪽 글 (= 이번에 켜진 로어북 등). 캐릭터 설명처럼 매번 같은 건 빠진다 ──
+  let lastSysSet = null, reqExtra = null;
+  const reqOn = () => { const E = globalThis.__JA_EXP ?? {}; return E.req != null ? !!E.req : settings.reqRead !== false; };
+  function readReqExtra(messages) {
+    const sys = (messages ?? []).filter(m => m && !(m.removable === true && (m.role === 'user' || m.role === 'assistant'))).map(m => stripLoreMark(contentOf(m)).trim()).filter(Boolean);
+    const set = new Set(sys.map(t => fnv(t)));
+    const prev = lastSysSet;
+    lastSysSet = set;
+    if (!reqOn() || !prev) return null;   // 처음 요청은 비교할 게 없다
+    const fresh = sys.filter(t => !prev.has(fnv(t))).join('\n').slice(0, 3000);
+    if (!fresh.trim()) return null;
+    const names = peopleIn(fresh).filter(n => story.people[n] && !story.people[n].hidden && !['persona', 'char'].includes(story.people[n].kind));
+    return { text: fresh, names };
+  }
+
+  // ── ② 인물 명함: 호칭 · 말투 · 나와의 사이 · 그 사람이 한 말 원문 1~2개 · 중요한 기억 1줄 ──
+  const ADDR_WORDS = /^(?:형|형님|오빠|누나|언니|선배|선배님|후배|사장님|선생님|아저씨|아줌마|이모|삼촌|자기|여보|도련님|아가씨|주인님|대장|대장님|씨)$/u;
+  const POLITE_END = /(?:요|니다|니까|세요|십시오|죠|예요|에요)[.!?~…"”']*$/u;
+  /** 그 사람이 한 말 (대사 이름표 · 서술 속 대사 · 말하기 동사로 아는 것), 최근 것부터 */
+  function linesOf(name, upto, max = 16) {
+    const out = [];
+    for (let mi = upto - 1; mi >= 0 && mi >= upto - 400 && out.length < max; mi--) {
+      const sp = speakerMap(mi);
+      // 이름표("도현: ")는 떼고 말만
+      const mine = [...sp].filter(([s, who]) => who === name).map(([s]) => ({ mi, s: unquote(s.replace(/^[^\s:("“]{1,12}\s*(?:\([^)]{0,20}\))?\s*[:：]\s*/u, '')).trim() })).filter(l => l.s.replace(/[^가-힣A-Za-z0-9]/g, '').length >= 3);
+      out.push(...mine.reverse());
+    }
+    return out.slice(0, max);
+  }
+  function cardOf(name, upto, latest) {
+    const me = personaCache || null;
+    const lines = linesOf(name, upto);
+    const bits = [];
+    // 호칭: 그 사람 말 맨 앞 "형," · "태오 씨," · "태오야," 같은 부르는 말
+    const addr = new Map();
+    for (const { s } of lines) {
+      const m = /^["“]?([^\s,，!?"”]{1,8}(?:\s[^\s,，!?"”]{1,3})?)\s*[,，]/u.exec(s);
+      if (!m) continue;
+      const w = m[1];
+      if (ADDR_WORDS.test(w) || (me && w.includes(me)) || (/(?:아|야|씨|님)$/u.test(w) && w.length <= 6 && !peopleIn(w).some(n => n !== me))) addr.set(w, (addr.get(w) ?? 0) + 1);
+    }
+    const top = [...addr].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (top) bits.push(`calls ${me ?? 'the user'} "${top}"`);
+    // 말투: 존댓말 / 반말
+    const ends = lines.map(l => l.s.trim()).filter(s => /[가-힣][.!?~…"”']*$/u.test(s));
+    if (ends.length >= 2) { const p = ends.filter(s => POLITE_END.test(s)).length / ends.length; bits.push(p >= 0.7 ? 'speaks politely (존댓말)' : p <= 0.3 ? 'speaks casually (반말)' : 'mixes polite and casual'); }
+    // 누구인지: 그 사람이 주어인 서술 원문 중 처음 소개 (민수는 태오의 고등학교 일 년 후배였다 · 빵집 사장 박소연은 …). 사실 칸 먼저
+    const forms = nameForms(story.people[name] ?? { name, aliases: [] }).filter(x => x.length >= 2);
+    const subj = (s) => forms.some(n => new RegExp(`${escRe(n)}(?:은|는|이|가)(?=[^가-힣]|$)`, 'u').test(s));
+    const own = facts.filter(f => f.mi < upto && FACT_K[f.k] && !speakerOf(f.mi, f.sent) && !/["“”]/.test(f.sent) && subj(f.sent));
+    const intro = own.find(f => f.k === 'fact') ?? own[0];
+    // 나와의 사이 (Jev 추측). 소개 원문이 있으면 그걸 믿는다
+    const pr = me ? story.pairs[pairKey(name, me)] : null;
+    if (!intro && pr && (pr.type || pr.aff)) bits.push(`with ${me}: ${[pr.type ? relEn(pr) : null, affEn(pr.aff)].filter(Boolean).join(', ')}`);
+    // 그 사람이 한 말 원문: 최근 메시지 2개, 메시지마다 한 줄로 이어서
+    const byMsg = [];
+    for (const l of lines) { const g = byMsg.find(x => x.mi === l.mi); if (g) g.s.unshift(l.s); else if (byMsg.length < 2) byMsg.push({ mi: l.mi, s: [l.s] }); }
+    const quotes = byMsg.reverse().map(g => `#${g.mi + 1} "${clip(g.s.join(' '), 90)}"`);
+    const who = intro ? `#${intro.mi + 1} ${clip(intro.sent, 70)}` : null;
+    if (!bits.length && !quotes.length && !who) return null;
+    return `Person — ${name}: ${[who, bits.join(' · '), quotes.join(' / ')].filter(Boolean).join(' | ')}`;
+  }
+  /** 명함을 넣을 사람: 이번 요청에 새로 들어온 글(로어북)에 나온 사람 → 지금 장면 인물 → 장면 마디에서 번진 인물. 나 · 봇 카드 이름은 빼고 */
+  function personCards(present, limitMi, latest, spread) {
+    const E = globalThis.__JA_EXP ?? {};
+    if (!(E.cards != null ? E.cards : settings.pcards !== false)) return [];
+    const ok = (n) => story.people[n] && !story.people[n].hidden && !['persona', 'char'].includes(story.people[n].kind) && !isTitleName(n);
+    const pick = [];
+    // 순서: 요청에 새로 들어온 글(로어북) → 내 말 → 직전 답장 → 장면 마디에서 번진 인물(장소로 이어진 사람) → 창 안의 나머지
+    const lastStory = [...timeline].reverse().find(m => m.role !== 'user')?.text ?? '';
+    // 장소 · 물건으로 이어진 사람: 내 말의 낱말(빵집 · 파출소)이 나온 기억에 가장 자주 같이 나온 인물 (이름이 안 나와도 그 장소의 사람)
+    const linked = [];
+    { const words = [...new Set(String(latest).split(/\s+/).map(w => w.replace(/[^가-힣A-Za-z0-9]/g, '').replace(/(?:에서는|에서|에게|한테|으로|까지|부터|처럼|이랑|하고|은|는|이|가|을|를|의|에|와|과|도|만|로)$/u, '')).filter(w => w.length >= 2 && !peopleIn(w).length && !ITEM_SKIP.test(w)))];
+      const cnt = new Map();
+      for (const f of facts) { if (f.mi >= limitMi || !words.some(w => f.sent.includes(w))) continue; for (const n of peopleIn(f.sent)) if (ok(n)) cnt.set(n, (cnt.get(n) ?? 0) + 1); }
+      linked.push(...[...cnt].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([n]) => n)); }
+    for (const n of [...(reqExtra?.names ?? []), ...peopleIn(latest), ...linked, ...peopleIn(memText(lastStory)), ...(spread ?? []).filter(w => story.people[w]).slice(0, 2), ...present]) if (ok(n) && !pick.includes(n)) pick.push(n);
+    const out = [];
+    for (const n of pick.slice(0, E.cardN ?? settings.cardN ?? 4)) { const c = cardOf(n, timeline.length, latest); if (c) out.push(c); }
+    return out;
+  }
+
+  // ── ③ 물건 이력: 얻음 · 줌 · 빌림 · 잃어버림 문장을 규칙으로 찾아, 물건마다 언제 · 어디서 · 누가 → 누구 · 지금 누가 가졌나 ──
+  const ITEM_VERBS = [
+    [/물려받/u, 'got', '물려받음'], [/(?:사\s?주었|사\s?줬|사줬|사\s?줌|선물했|선물로\s?주)/u, 'gave', '선물함'], [/(?:돌려받)/u, 'got', '돌려받음'],
+    [/(?:돌려주|돌려줬|돌려줌)/u, 'gave', '돌려줌'], [/(?:건네주|건넸|건네)/u, 'gave', '건넴'], [/(?:빌려주|빌려줬|빌려줌)/u, 'gave', '빌려줌'], [/(?:샀|구입했|구매했)/u, 'got', '삼'],
+    [/(?:받았|받은)/u, 'got', '받음'], [/(?:빌렸|빌린)/u, 'got', '빌림'], [/(?:주웠|얻었|획득했|손에\s?넣)/u, 'got', '얻음'],
+    [/(?:잃어버|잃었|분실했)/u, 'lost', '잃어버림'], [/(?:훔쳤)/u, 'got', '훔침'], [/(?:팔았)/u, 'gave', '팖'],
+  ];
+  const ITEM_SKIP = /^(?:것|거|돈|말|손|눈|마음|시간|생각|이야기|얘기|부탁|도움|약속|연락|문자|전화|사과|선물)$/u;
+  let itemCache = { facts: null, items: null };
+  function itemRecords() {
+    if (itemCache.facts === facts) return itemCache.items;
+    const items = new Map();
+    for (const f of facts) {
+      const s = unquote(f.sent);
+      const v = ITEM_VERBS.find(([re]) => re.test(s));
+      if (!v) continue;
+      const toks = s.split(/\s+/).filter(Boolean);
+      // 동사 낱말 (한 낱말에서 먼저, 없으면 "선물로 주었다"처럼 두 낱말). "빌려주지 마라 · 잃어버리지 않게"는 일어난 일이 아니다
+      let vi = toks.findIndex(t => v[0].test(t));
+      if (vi < 0) vi = toks.findIndex((t, i) => i < toks.length - 1 && v[0].test(`${t} ${toks[i + 1]}`)) + 1;
+      if (vi <= 0 || /지\s*(?:마|말|않|못)/u.test(toks.slice(vi, vi + 2).join(' '))) continue;
+      const clean = (t) => t.replace(/[^가-힣A-Za-z0-9]/g, '');
+      let at = -1;
+      for (let i = vi - 1; i >= 0; i--) if (/(?:을|를)[,.!?]*$/u.test(toks[i])) { at = i; break; }
+      let head, phrase;
+      if (at >= 0) head = clean(toks[at]).replace(/(?:을|를)$/u, '');
+      else { const w = clean(toks[vi - 1]); if (w.length >= 2 && !peopleIn(w).length && !/(?:은|는|이|가|에게|한테|에서|께|도|만|으로|로|와|과|의|에|나|턴|엔|선|게|히|이|리|도록|처럼)$/u.test(w)) { head = w; at = vi - 1; } }
+      if (!head || head.length < 2 || ITEM_SKIP.test(head) || peopleIn(head).length) continue;
+      phrase = head;
+      const pv = at > 0 ? clean(toks[at - 1]) : '';
+      if (pv && pv.length <= 4 && !peopleIn(pv).length && !/(?:은|는|이|가|에게|한테|에서|께|도|만|으로|로|와|과|의|을|를|인)$/u.test(pv) && !/^(?:그|이|저|그냥|잠깐|다시|또|진짜|정말)$/u.test(pv)) phrase = `${pv} ${head}`;
+      const ppl = peopleIn(s).filter(n => story.people[n]);
+      const subj = ppl.find(n => isSubject(s, n)) ?? speakerOf(f.mi, f.sent) ?? (timeline[f.mi]?.role === 'user' ? personaCache : null);
+      const src = ppl.find(n => new RegExp(`${escRe(n)}(?:에게서|한테서|께서)`, 'u').test(s));
+      const rcv = ppl.find(n => n !== subj && isRecipient(s, n));
+      const other = v[1] === 'got' ? (src ?? rcv ?? null) : (rcv ?? null);
+      const holder = v[1] === 'got' ? subj : v[1] === 'gave' ? rcv : null;
+      const it = items.get(head) ?? { head, name: phrase, ev: [] };
+      if (phrase.length > it.name.length) it.name = phrase;
+      if (!it.ev.some(e => e.mi === f.mi && e.verb === v[2])) it.ev.push({ mi: f.mi, f, verb: v[2], kind: v[1], who: subj, other, holder });
+      items.set(head, it);
+    }
+    for (const it of items.values()) it.ev.sort((a, b) => a.mi - b.mi);
+    itemCache = { facts, items };
+    return items;
+  }
+  /** 장면에 나온 물건(내 말 · 새로 들어온 글 · 넣을 기억 · 최근 메시지)의 이력 줄. 첫 이력은 원문, 나머지는 짧게 */
+  function itemLines(limitMi, latest, seenText) {
+    const E = globalThis.__JA_EXP ?? {};
+    if (!(E.items != null ? E.items : settings.items !== false)) return [];
+    const hay = `${latest}\n${reqExtra?.text ?? ''}\n${seenText}`;
+    const out = [];
+    for (const it of itemRecords().values()) {
+      if (out.length >= (E.itemN ?? 3)) break;
+      if (!hay.includes(it.head)) continue;
+      const ev = it.ev.filter(e => e.mi < timeline.length);
+      if (!ev.length) continue;
+      const when = (mi) => { const c = storyClock(mi + 1); const dm = /^\d{4}-(\d{1,2})-(\d{1,2})$/.exec(c.d ?? ''); const d = dm ? `${Number(dm[1])}/${Number(dm[2])}` : (c.d ?? ''); return [d, c.place].filter(Boolean).join(' '); };
+      const step = (e) => `#${e.mi + 1}${when(e.mi) ? ` (${when(e.mi)})` : ''} ${e.who ?? '?'} ${e.verb}${e.other ? ` ${e.kind === 'got' ? `← ${e.other}` : `→ ${e.other}`}` : ''}`;
+      const first = ev[0], rest = ev.slice(1).slice(-3);
+      const last = ev[ev.length - 1];
+      const now = last.kind === 'lost' ? 'lost' : last.holder ? `with ${last.holder}` : null;
+      out.push(`Item — ${it.name}: ${step(first)} "${clip(withSpeaker(first.f.mi, first.f.sent), 60)}"${rest.length ? ` → ${rest.map(step).join(' → ')}` : ''}${now ? ` · now ${now}` : ''}`);
+    }
+    return out;
+  }
+
   /** 이야기 줄: 지금 · 관계 · 열린 약속 (짧게) */
   function storyLines(present, upto, recalled = []) {
     const out = [];
@@ -976,12 +1132,13 @@ let lastRescue = null;
     const n = previewTail();
     const entries = [...timeline.slice(timeline.length - n), { role: 'user', text, key: msgKey('user', text), loose: looseKey('user', text) }];
     const tr = beginTrace('preview');
+    const keepReq = reqExtra; reqExtra = null;
     try {
       const r = await recall(entries, tr, timeline.length - n);
       const tokens = r.block ? estimateTokens(r.block) : 0;
       tr.note = `미리 보기 ~${tokens}토큰`;
       return { at: Date.now(), tokens, block: r.block, ...r.trace, picked: r.picked.length, window: entries.length, tail: n, raw: r };
-    } finally { endTrace(tr); }
+    } finally { reqExtra = keepReq; endTrace(tr); }
   }
 
   async function recall(windowEntries, tr, limitOverride) {
@@ -990,6 +1147,7 @@ let lastRescue = null;
     const limitMi = limitOverride ?? timeline.length - windowEntries.length;
     if (cfg.budget <= 0) return { block: '', picked: [], trace: { cands: 0 } };
     const present = presentCast(windowEntries);
+    for (const n of reqExtra?.names ?? []) if (!present.includes(n)) present.push(n);
     const latest = memText(windowEntries[windowEntries.length - 1]?.text ?? '');
     // 장면: 뒤에서부터 메시지 통째로 sceneChars자까지. 한 메시지가 그보다 길면 앞 1/4 + 뒤 3/4
     const maxScene = cfg.sceneChars ?? 6000;
@@ -1011,7 +1169,7 @@ let lastRescue = null;
     { let cur = ''; for (const p of lastStory.split(/\n+/).map(x => x.trim()).filter(Boolean)) { cur = cur ? `${cur}\n${p}` : p; if (cur.length >= 700) { topics.push(cur); cur = ''; } } if (cur.length >= 150 || (!topics.length && cur)) topics.push(cur); }
     const pickTopics = topics.length <= 4 ? topics : [0, 1, 2, 3].map(k => topics[Math.round(k * (topics.length - 1) / 3)]);
     // 직전 답장이 짧으면(문단으로 나눌 게 없으면) 예전처럼 최근 흐름 한 덩어리로
-    const queries = [latest.slice(0, 2000) || ctx, ...(lastStory.length >= 1200 && pickTopics.length >= 2 ? pickTopics.map(t => t.slice(0, 1500)) : [ctx || latest])].filter(Boolean);
+    const queries = [latest.slice(0, 2000) || ctx, ...(lastStory.length >= 1200 && pickTopics.length >= 2 ? pickTopics.map(t => t.slice(0, 1500)) : [ctx || latest]), ...(reqExtra?.text ? [reqExtra.text.slice(0, 1500)] : [])].filter(Boolean);
     const hasPool = facts.some(f => f.mi < limitMi);
     let qv = [];
     if (hasPool) { try { qv = await timed(tr, '질문 임베딩', () => queryVecs(queries), () => `검색어 ${queries.length}개`); } catch (error) { setError('임베딩', error); } }
@@ -1133,12 +1291,21 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       const at = head.length - (dLine ? 1 : 0);
       const keep = []; for (const l of extra) { const t = estimateTokens(l); if (t <= room) { keep.push(l); room -= t; } }
       if (keep.length) { head.splice(at, 0, ...keep); headText = head.join('\n'); } }
+    // 인물 명함 · 물건 이력: 메인 모델이 답장 중에 꺼낼 사람(호칭 · 말투 · 원문)과 물건(어디서 · 누구한테 · 지금 누가). 자기 몫(cardTok) 안에서
+    //  기억 줄 예산에서는 빼지 않는다 (명함 때문에 기억 줄이 줄면 안 된다)
+    let cardCost = 0;
+    { const E = globalThis.__JA_EXP ?? {}; let room = E.cardTok ?? settings.cardTok ?? 320; const keep = [];
+      let cards = [], items = [];
+      try { cards = personCards(present, limitMi, latest, gInfo?.spread); } catch (error) { setError('명함', error); }
+      try { items = itemLines(limitMi, latest, scored.slice(0, 12).map(x => x.f.sent).join('\n')); } catch (error) { setError('물건 이력', error); }
+      for (const l of [...items, ...cards]) { const t = estimateTokens(l); if (t <= room) { keep.push(l); room -= t; cardCost += t; } }
+      if (keep.length) { head.splice(head.length - (dLine ? 1 : 0), 0, ...keep); headText = head.join('\n'); } }
     // 지금 메시지 번호: #가 이것에 가까울수록 최근 (지금 #123이면 #111은 방금, #6은 한참 전)
     const nowNo = `Current message: #${limitMi + windowEntries.length} (a # close to this is recent, a small # is long ago)`;
     // 요약 줄(관계 · 약속 · 비밀 · 태그 · 인물 표)은 Jev 추측이라 틀릴 수 있다고 알린다. 원문 기억 줄에는 안 붙인다 (기억 자체를 덜 믿게 되니까)
-    const guessed = head.some(l => /↔|^(?:Open promise|Secret|Promise \(|Relationship|People met)|^\S+ tags:/.test(l));
-    const caveat = guessed ? 'Relationship / promise / secret / tag lines are auto-summarized and may be wrong; if they conflict with the # excerpts or the current chat, trust those.' : '';
-    let used = estimateTokens(headText) + estimateTokens(MEM_LEGEND) + estimateTokens(nowNo) + estimateTokens(caveat);
+    const guessed = head.some(l => /↔|^(?:Open promise|Secret|Promise \(|Relationship|People met|Person —)|^\S+ tags:/.test(l));
+    const caveat = guessed ? 'Relationship / promise / secret / tag / person-card lines are auto-summarized and may be wrong; if they conflict with the # excerpts or the current chat, trust those.' : '';
+    let used = estimateTokens(headText) - cardCost + estimateTokens(MEM_LEGEND) + estimateTokens(nowNo) + estimateTokens(caveat);
 
     const units = new Map();
     const P7 = !!(globalThis.__JA_EXP ?? {}).para7 && (globalThis.__JA_EXP ?? {}).p7Out !== 0;
@@ -1430,6 +1597,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
     if (characterCache.name) { const p = addPerson(characterCache.name, 'char'); if (p) p.kind = 'char'; }
     if (personaCache) { const p = addPerson(personaCache, 'persona'); if (p) p.kind = 'persona'; }
   }
+  const LABEL_STOP2 = /^(?:목록|정보|이름|나이|직업|성격|외모|특징|관계|소지품|설명|대사|행동|생각|속마음|독백|나레이션|내레이션|시스템|알림|공지|제목|부제|시점|배경|상황|현재|다음|이전|오늘|내일|어제|결론|이유|방법|문제|정답|질문|대답|답변|선택|명령|규칙|조건|효과|설정|키워드|태그|분류|종류|등급|가격|수량|합계|총합|남은|잔액)$/u;
   function speakersIn(text) {
     const out = [];
     for (const line of String(text ?? '').split('\n')) {
@@ -1442,6 +1610,11 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
         const k = SPEAKER_LINE.exec(s);
         const w = k?.[1].trim();
         if (w && !/\s/.test(w) && !NAME_STOP.has(w.toLowerCase())) out.push(w);
+      }
+      // 따옴표 없는 이름표: "민수: 형, 오늘도 컵라면이야?" (줄 맨 앞이나 문단 가운데 문장 맨 앞). 한글 이름 2~6자, 상태창 칸 · 설정 칸은 빼고
+      for (const s of sentencesOf(line)) {
+        const k = /^[ \t]*(?:\*\*|__)?([가-힣]{2,6})(?:\*\*|__)?[ \t]*(?:\([^)\n]{1,20}\))?[ \t]*[:：][ \t]*(?!["“”'‘’「『])([^:：\n]*[가-힣][^:：\n]*)$/u.exec(s);
+        if (k && !LABEL_STOP.test(k[1]) && !LABEL_STOP2.test(k[1]) && !NAME_STOP.has(k[1])) out.push(k[1]);
       }
     }
     return [...new Set(out)];
@@ -3372,6 +3545,7 @@ ${ctx}`, present, limitMi, new Set(first.map(f => f.id)), tr); gPicks = freshenL
       const head = timeline[timeline.length - entries.length]?.key ?? null;
       if (head !== windowHead) { windowHead = head; try { void Promise.resolve(localStore?.setItem(WINHEAD_KEY(chatKey), head)).catch(() => {}); } catch { } }
       // 기억(칸 줄)은 보낸 뒤 뒤에서 만든다. 여기서는 찾아 넣기만
+      try { reqExtra = readReqExtra(messages); } catch { reqExtra = null; }
       const r = await recall(entries, tr);
       const tokens = r.block ? estimateTokens(r.block) : 0;
       tr.note = `넣은 기억 ~${tokens}토큰`;
@@ -3888,6 +4062,7 @@ details.more.danger summary{color:var(--tx2)}
   const TITLES = { now: '지금', people: '인물과 관계', promises: '약속 · 비밀', memory: '기억', nodes: '기억 마디', cards: '연출 카드', news: '업데이트 내역', settings: '설정' };
   // 업데이트 내역 (새 버전이 위)
   const CHANGELOG = [
+    ['1.0.20', '2026-10-28', ['인물 명함 (기본 켬): 장면 인물 · 장소로 이어진 인물(빵집 → 빵집 사장) · 로어북에 나온 인물마다 처음 소개 원문, 나를 부르는 호칭, 존댓말/반말, 최근 한 말 원문 2개를 한 줄로 넣어요. 메인 모델이 그 인물을 꺼낼 때 호칭 · 말투를 지어내지 않게요.', '물건 이력 (기본 켬): 물려받음 · 삼 · 선물 · 빌려줌 · 잃어버림 · 돌려줌을 모아 물건마다 언제 · 어디서 · 누가 → 누구 · 지금 누가 가졌는지 알려 줘요.', '요청에서 새로 들어온 글 읽기 (기본 켬): 이번 요청에 새로 켜진 로어북 글도 기억 찾기에 쓰고, 거기 나온 인물을 장면 인물로 봐요.', '따옴표 없는 이름표(민수: 형, 오늘도 컵라면이야?)의 이름도 인물로 등록해요. 전에는 따옴표가 있어야만 돼서 인물이 빠지곤 했어요.', '명함 · 물건 줄은 기억 줄 예산과 따로 써서 기존 기억 줄이 줄지 않아요.']],
     ['1.0.19', '2026-10-27', ['잘못 합친 인물 떼어 내기: 인물 시트의 "다른 이름" 칩에 ×가 생겼어요. 누르면 합칠 때 옮겨 간 관계 · 약속 · 비밀 · 태그 · 등장 횟수까지 원래대로 돌리고, 둘을 다른 사람으로 기억해서 같은 사람 제안이 다시 안 떠요 (예: "대장님"을 기병대장 · 보병대장이 같이 쓰는데 한쪽에 합쳐 버린 경우). 예전 버전에서 합친 건 기록이 없어서 이름만 떼고, 앞으로 나오는 기억부터 따로 봐요.']],
     ['1.0.18', '2026-10-25', ['기억으로 로어북 켜기를 보낼 때 바로 끝나게 바꿨어요. 1.0.17은 보낼 때 Jev로 기억을 미리 찾느라 1초쯤 걸렸는데, 그사이 리스(PocketRisu 포함)가 메시지 목록을 되돌려 쓰면서 스트리밍 답장 자리가 지워져 "message[n] is undefined" 오류가 났어요. 이제 이 기기 안에서만(바로 전 답장 기억 · 낱말 겹치는 기억 · 지금 최신 · 번진 마디) 트리거를 찾고, 기억 찾기는 예전처럼 보내기 직전에 해요.']],
     ['1.0.17', '2026-10-25', ['기억으로 로어북 켜기 (기본 켬): 리스 로어북은 채팅 메시지에서만 트리거를 찾아서 우리 기억으로는 안 켜졌어요. 이제 보낼 때 기억을 미리 찾고, 그 기억에 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여서 리스가 로어북을 켜요. 켜진 뒤 위치 · 확률 · 데코레이터는 리스가 그대로. 숨김 표시는 화면 · 메인 모델에서 빼요. 기억 찾기는 한 번만 (Jev 호출 그대로). 로어북 없는 봇은 전과 똑같아요.', '번진 마디도 로어북 켜기 (기본 켬, 4개): 기억 마디에서 불이 번져 켜진 마디 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요 (장소가 켜지면 그 장소의 인물도). 설정에서 개수 · 끄기.']],
@@ -4993,6 +5168,9 @@ details.more.danger summary{color:var(--tx2)}
         <div class="field inline"><div><label>기억으로 로어북 켜기</label><div class="help">리스 로어북은 채팅 메시지에서만 트리거를 찾아서, 우리가 넣는 기억으로는 안 켜져요. 이걸 켜면 보낼 때 이 기기 안에서 바로(네트워크 없이) 관련 기억을 훑어서, 걸리는 트리거 낱말만 내 메시지 끝에 숨겨 붙여 리스가 로어북을 켜게 해요 (켜진 뒤 위치 · 확률 같은 건 리스가 그대로). 표시는 화면과 메인 모델에서 빼요. 기억 찾기 · Jev 호출은 예전 그대로예요.</div></div>${sw('loreTrig', d.loreTrig !== false)}</div>
         <div class="field inline" style="padding-left:14px"><div><label>└ 번진 마디도 로어북 켜기</label><div class="help">기억 마디에서 불이 번져 켜진 마디(장소 → 그 장소의 인물 …) 중 가장 밝은 몇 개의 이름으로도 로어북을 켜요. 기억 글에 안 들어간 이름이라도요. 많을수록 로어북이 더 켜져서 토큰이 늘어요.</div></div><div class="row" style="gap:6px;flex-wrap:nowrap"><input class="inp" type="number" inputmode="numeric" min="1" max="10" data-field="loreSpreadN" value="${escapeHtml(d.loreSpreadN ?? 4)}" style="width:56px;text-align:center;padding:6px" aria-label="번진 마디 개수">${sw('loreSpread', d.loreSpread !== false)}</div></div>
         <div class="field inline"><div><label>최신 정보로 바꾸기</label><div class="help">새 기억이 생기면 비슷한 옛 기억을 찾아 Jev가 "새 것이 옛 것을 대체하나"만 판정해요 (코인 128 → 900, 레벨, 무기, 이사, 머리색 …). 옛 기억 대신 최신 기억을 넣고, 바뀐 값은 "Latest state" 한 줄로 늘 알려 줘요. "예전엔 얼마였지?"처럼 과거를 물으면 옛 기억도 그대로 꺼내요.</div></div>${sw('latest', d.latest !== false)}</div>
+        <div class="field inline"><div><label>인물 명함</label><div class="help">장면에 나오거나 장소 · 로어북으로 이어진 인물마다 한 줄: 처음 소개 원문, 나를 부르는 호칭(형 · 태오 씨 …), 존댓말/반말, 그 사람이 최근 한 말 원문 2개. 메인 모델이 그 인물을 꺼낼 때 호칭 · 말투가 바뀌지 않게요. Jev 호출 없이 규칙으로 만들고, 기억 줄 예산과 따로 써요.</div></div>${sw('pcards', d.pcards !== false)}</div>
+        <div class="field inline"><div><label>물건 이력</label><div class="help">물려받음 · 삼 · 받음 · 빌려줌 · 잃어버림 · 돌려줌 같은 문장을 규칙으로 모아, 지금 이야기에 나온 물건마다 언제 · 어디서 · 누가 → 누구, 지금 누가 가졌는지 한 줄로 알려 줘요 (물건 출처가 바뀌어 버리는 것 막기).</div></div>${sw('items', d.items !== false)}</div>
+        <div class="field inline"><div><label>요청에서 새로 들어온 글 읽기</label><div class="help">지난 요청과 비교해 이번에 새로 들어온 글(이번에 켜진 로어북 등)을 기억 찾기 검색어로 쓰고, 거기 나온 인물을 장면 인물로 봐요. 캐릭터 설명처럼 매번 같은 글은 빼요.</div></div>${sw('reqRead', d.reqRead !== false)}</div>
         <div class="field inline"><div><label>놓친 기억 줍기</label><div class="help">Jev가 "필요 없음"으로 자른 기억 중, 내 메시지와 아주 가까운 것을 Voyage 리랭커로 다시 봐서 최대 2줄 살려요. 임베딩이 Voyage일 때만 돼요 (리랭커 비용은 아주 작아요).</div></div>${/voyageai\.com/.test(embedConfig(d).endpoint ?? '') ? sw('rescue', d.rescue) : '<span class="dim xs">Voyage 임베딩일 때만</span>'}</div>
         <div class="field inline"><div><label>작업 중 동그라미</label><div class="help">뒤에서 일하는 동안 채팅 화면 오른쪽 위에 도는 동그라미를 띄워요. <b style="color:#ef4444">빨강</b> 기억 저장 · <b style="color:#a855f7">보라</b> 이야기 정리 · <b style="color:#22c55e">초록</b> 마디 채우기. 누르면 이 화면이 열려요.</div></div>${sw('busySpin', d.busySpin)}</div>
         <div class="field"><label>Jev 가격 (100만 토큰당 달러)</label><div class="help">"지금" 탭의 예상 비용 계산에만 써요.</div><div class="row" style="gap:6px;margin-top:8px"><span class="dim">$</span><input class="inp" type="number" inputmode="decimal" step="any" min="0" data-field="jevPrice" value="${escapeHtml(d.jevPrice)}" style="max-width:110px"><button class="btn sm g" data-act="usage-reset">사용량 초기화</button></div></div>
@@ -5802,7 +5980,7 @@ details.more.danger summary{color:var(--tx2)}
       beforeRequestHandler, afterRequestHandler, indexAll, analyzeAll, ensureChat, refreshChat, flushVectors, flushStory, flushCards, saveSettings,
       chunkText, overlapStart, chatEntries, toSigns, packSigns, unpackSigns, storageStats, recall, parseStatus, storyClock, clockLabel, peopleIn, mergePeople, hidePerson, togglePin, chunkByCk, searchMemory, searchFacts,
       renderNow, renderPeople, renderPromises, renderMemory, tagCandidates, tagNouns, addTag, topTags, backupToLore, readLoreBackup, applyBackup, currentChatObj, backupData, renderSettings, renderOnboard, graphSvg, personSheet, chunkSheet, presetOf,
-      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, quickSpread, quickLoreText, splitAlias, debugLog: () => debugLog, ui,
+      getSettings: () => settings, getStory: () => story, allDirCards, dirEligible, dirSheet, directorBox, DIR_PACKS, getTimeline: () => timeline, getChunks: () => chunks, getCards: () => cardStore, getFacts: () => facts, buildGraph, nodeCands, nodeBacklog, fillNodes, fillNodesAll, renderNodes, nodeSheet, graphData, nodeMapPick, makeNodeSim, drawNodeMap, graphFresh, ensureGraphAsync, busyIcon, getBusy: () => ({ ...busyN, shown: busyShown }), getFactStore: () => factStore, factMessages, factBacklog, retrieveFacts, searchFacts, flushFacts, factItem, getLastRecall: () => lastRecall, getLastRescue: () => lastRescue, previewRecall, previewTail, withSpeaker, speakerOf, liveThreads, supersedeAll, tagAllFacts, loreHits, loreInputHandler, loreDisplayHandler, stripLoreMark, quickSpread, quickLoreText, splitAlias, itemRecords, cardOf, personCards, readReqExtra, linesOf, debugLog: () => debugLog, ui,
       waitJob: async () => { await (job ?? Promise.resolve()); await (storyJob ?? Promise.resolve()); },
     };
   }
